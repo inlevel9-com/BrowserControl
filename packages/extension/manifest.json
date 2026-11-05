@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "description": "Let shell-capable AI agents drive this browser via the bctl CLI, in a separate Agent Window, with your existing logins.",
   "author": "INLEVEL9",
-  "homepage_url": "https://github.com/oswarld/BrowserControl",
+  "homepage_url": "https://github.com/inlevel9-com/BrowserControl",
   "minimum_chrome_version": "125",
   "icons": {
     "16": "icons/icon16.png",
@@ -46,8 +46,6 @@
     "scripting",
     "tabs",
     "storage",
-    "webNavigation",
-    "windows",
     "cookies"
   ],
   "host_permissions": [

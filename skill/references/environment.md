@@ -2,11 +2,9 @@
 
 ## CLI missing
 
-Check `bctl --version`. Install options, in order of preference:
+Check `bctl --version`. Install from the BrowserControl checkout:
 
 ```sh
-npm install -g browser-control        # published package (bin: bctl)
-# or from a checkout:
 pnpm install && pnpm build && pnpm -F browser-control link --global
 ```
 
