@@ -1,0 +1,22 @@
+{
+  "name": "browser-control",
+  "version": "1.0.0",
+  "description": "bctl — drive Chromium browsers (Chrome, Edge, Whale, Brave, Arc, Dia) from any shell-capable AI agent",
+  "license": "MIT",
+  "type": "module",
+  "bin": { "bctl": "./bin/bctl.js" },
+  "files": ["bin", "dist", "skill", "README.md"],
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --test --experimental-strip-types src/*.test.ts"
+  },
+  "dependencies": {
+    "commander": "^13.1.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@browser-control/protocol": "workspace:*"
+  }
+}

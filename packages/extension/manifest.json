@@ -1,0 +1,56 @@
+{
+  "manifest_version": 3,
+  "name": "BrowserControl",
+  "version": "0.0.0",
+  "description": "Let shell-capable AI agents drive this browser via the bctl CLI, in a separate Agent Window, with your existing logins.",
+  "author": "INLEVEL9",
+  "homepage_url": "https://github.com/oswarld/BrowserControl",
+  "minimum_chrome_version": "125",
+  "icons": {
+    "16": "icons/icon16.png",
+    "24": "icons/icon24.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "BrowserControl",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "24": "icons/icon24.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "permissions": [
+    "alarms",
+    "debugger",
+    "scripting",
+    "tabs",
+    "storage",
+    "webNavigation",
+    "windows",
+    "cookies"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ]
+}

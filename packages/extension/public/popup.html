@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>BrowserControl</title>
+<style>
+  :root { color-scheme: light dark; font: 13px/1.4 -apple-system, "Segoe UI", system-ui, sans-serif; }
+  body { margin: 0; width: 320px; padding: 14px; }
+  h1 { font-size: 15px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #999; display: inline-block; }
+  .dot.connected { background: #22c55e; } .dot.connecting { background: #f59e0b; } .dot.disconnected { background: #ef4444; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 6px 0; }
+  label { opacity: .75; }
+  input[type=text], input[type=number] { width: 150px; padding: 4px 6px; border: 1px solid #8884; border-radius: 6px; background: transparent; color: inherit; }
+  button { padding: 4px 10px; border-radius: 6px; border: 1px solid #8886; background: #8882; color: inherit; cursor: pointer; }
+  button:hover { background: #8884; }
+  code { font-size: 11px; user-select: all; }
+  .muted { opacity: .6; font-size: 11px; }
+  ul { margin: 4px 0 0; padding-left: 16px; }
+  hr { border: 0; border-top: 1px solid #8883; margin: 10px 0; }
+</style>
+</head>
+<body>
+  <h1><span id="dot" class="dot"></span> BrowserControl <span id="state" class="muted"></span></h1>
+  <div class="row"><label>Enabled</label><input type="checkbox" id="enabled" /></div>
+  <div class="row"><label>Daemon port</label><span><input type="number" id="port" min="1" max="65535" /> <button id="savePort">Save</button></span></div>
+  <div class="row"><label>Label</label><span><input type="text" id="label" placeholder="e.g. work-chrome" /> <button id="saveLabel">Save</button></span></div>
+  <div class="row"><label>Browser</label><span id="browser" class="muted"></span></div>
+  <div class="row"><label>Instance id</label><code id="instance"></code></div>
+  <div class="row"><label>Daemon</label><span id="daemon" class="muted">–</span></div>
+  <hr />
+  <div><label>Active sessions</label><ul id="sessions"><li class="muted">none</li></ul></div>
+  <hr />
+  <div class="muted">Agent command: <code>bctl session start --browser &lt;label-or-instance-id&gt;</code></div>
+  <div class="muted" id="hint"></div>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

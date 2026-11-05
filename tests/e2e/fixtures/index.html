@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>BrowserControl Fixture</title>
+<style>body{font-family:sans-serif;max-width:720px;margin:40px auto} .hidden{display:none} #tall{height:2400px;background:linear-gradient(#eee,#ccc)}</style>
+</head>
+<body>
+<header><h1>Fixture home</h1><nav aria-label="Main"><a href="/second.html" id="to-second">Second page</a> · <a href="#frag">Fragment</a></nav></header>
+<main>
+  <form id="search" action="/second.html" method="get">
+    <label for="q">Search</label>
+    <input id="q" name="q" type="text" placeholder="Type here" />
+    <select id="color" name="color"><option value="r">Red</option><option value="g">Green</option><option value="b">Blue</option></select>
+    <label><input type="checkbox" id="agree" name="agree" /> I agree</label>
+    <button type="submit" id="go">Go</button>
+  </form>
+  <p id="status">idle</p>
+  <button id="alerter" onclick="alert('hello from fixture')">Alert me</button>
+  <button id="confirmer" onclick="document.getElementById('status').textContent = confirm('ok?') ? 'confirmed' : 'cancelled'">Confirm me</button>
+  <button id="logger" onclick="console.log('clicked logger', 42); console.error('boom'); fetch('/api/ping').then(r=>r.json()).then(j=>document.getElementById('status').textContent='pong:'+j.ok)">Log and fetch</button>
+  <button id="later" onclick="setTimeout(()=>{const d=document.createElement('div');d.id='appeared';d.textContent='I appeared';document.body.appendChild(d)},600)">Show later</button>
+  <div contenteditable="true" id="editor" aria-label="Editor">edit me</div>
+  <input id="hidden-input" class="hidden" />
+  <div id="tall"></div>
+  <p id="bottom">bottom marker</p>
+</main>
+<script>
+  document.getElementById('q').addEventListener('input', e => { document.getElementById('status').textContent = 'typed:' + e.target.value; });
+  document.getElementById('q').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); document.getElementById('status').textContent = 'enter:' + e.isTrusted; } });
+  document.getElementById('go').addEventListener('click', e => { document.getElementById('status').textContent = 'go-trusted:' + e.isTrusted; });
+  console.log('fixture loaded');
+</script>
+</body></html>

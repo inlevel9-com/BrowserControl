@@ -1,0 +1,16 @@
+{
+  "name": "@browser-control/extension",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --test --experimental-strip-types src/*.test.ts",
+    "zip": "node build.mjs && cd dist && zip -qr ../dist.zip . && cd .. && echo dist.zip"
+  },
+  "dependencies": {
+    "@browser-control/protocol": "workspace:*"
+  }
+}
