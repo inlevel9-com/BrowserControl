@@ -221,7 +221,8 @@ const chromeArgs = [
   ...(headful ? [] : ["--headless=new"]),
   "about:blank",
 ];
-console.log(`browser: ${browser}`);
+const forced = process.env.BCTL_TEST_FORCE_FALLBACKS === "1";
+console.log(`browser: ${browser}${forced ? "  (fallback paths forced)" : ""}`);
 const chrome = spawn(browser, chromeArgs, { stdio: "ignore" });
 
 let results = { passed: 0, failed: 0 };
@@ -487,6 +488,7 @@ try {
     await sleep(300);
     const r = await bctl("record", "stop", "--out", tmp, ...S());
     assert.ok(r.frames > 3, `frames ${r.frames}`);
+    if (forced) assert.ok(r.frames < 60, `fallback capture should be a few fps, got ${r.frames} frames`);
     assert.equal(r.format, "avi");
     const head = readFileSync(r.saved_to).subarray(0, 12).toString("latin1");
     assert.equal(head.slice(0, 4), "RIFF");

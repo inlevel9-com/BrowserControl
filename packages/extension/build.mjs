@@ -34,6 +34,8 @@ const opts = {
   define: {
     __BCTL_EXT_VERSION__: JSON.stringify(pkg.version),
     __BCTL_DAEMON_WS_URL__: JSON.stringify(wsUrl),
+    // Test-only: make e2e exercise the fallback paths (no screencast, no native file chooser).
+    __BCTL_FORCE_FALLBACKS__: JSON.stringify(process.env.BCTL_TEST_FORCE_FALLBACKS === "1"),
   },
   absWorkingDir: here,
 };

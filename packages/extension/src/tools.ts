@@ -91,6 +91,9 @@ export interface ToolDeps {
   notifyControlled: (tabId: number, sessionId: string | null) => void;
 }
 
+declare const __BCTL_FORCE_FALLBACKS__: boolean;
+const FORCE_FALLBACKS = typeof __BCTL_FORCE_FALLBACKS__ === "boolean" && __BCTL_FORCE_FALLBACKS__;
+
 // Runs in the page's main world via Runtime.callFunctionOn with `this` = the <input type=file>.
 const SET_FILES_FN = `function (files) {
   const dt = new DataTransfer();
@@ -105,6 +108,48 @@ const SET_FILES_FN = `function (files) {
   this.dispatchEvent(new Event("change", { bubbles: true }));
   return { names: Array.from(this.files || []).map((f) => f.name) };
 }`;
+
+/**
+ * Runs in the page's MAIN world. While armed, the next input.click()/showPicker() on a file input
+ * marks that input instead of opening a native picker; bctl then sets the files on it.
+ */
+function armFileChooserHook(nonce: string): void {
+  type Hook = { armed: string | null; click: HTMLInputElement["click"]; picker?: HTMLInputElement["showPicker"] };
+  const w = window as unknown as { __bctlChooser?: Hook };
+  if (!w.__bctlChooser) {
+    const proto = HTMLInputElement.prototype;
+    const hook: Hook = { armed: null, click: proto.click, picker: proto.showPicker };
+    w.__bctlChooser = hook;
+    const take = (el: HTMLInputElement): boolean => {
+      if (!hook.armed || el.type.toLowerCase() !== "file") return false;
+      el.setAttribute("data-bctl-chooser", hook.armed);
+      hook.armed = null;
+      return true;
+    };
+    proto.click = function (this: HTMLInputElement) {
+      if (!take(this)) hook.click.call(this);
+    };
+    if (hook.picker) {
+      proto.showPicker = function (this: HTMLInputElement) {
+        if (!take(this)) hook.picker!.call(this);
+      };
+    }
+  }
+  w.__bctlChooser.armed = nonce;
+}
+
+/** Restore the page's own input.click()/showPicker() and clear the marker. */
+function disarmFileChooserHook(nonce: string): void {
+  type Hook = { armed: string | null; click: HTMLInputElement["click"]; picker?: HTMLInputElement["showPicker"] };
+  const w = window as unknown as { __bctlChooser?: Hook };
+  const hook = w.__bctlChooser;
+  if (hook) {
+    HTMLInputElement.prototype.click = hook.click;
+    if (hook.picker) HTMLInputElement.prototype.showPicker = hook.picker;
+    delete w.__bctlChooser;
+  }
+  document.querySelector(`[data-bctl-chooser="${nonce}"]`)?.removeAttribute("data-bctl-chooser");
+}
 
 export function buildTools(deps: ToolDeps): Record<string, ToolHandler> {
   const { sessions, cdp, downloads, recorder } = deps;
@@ -716,20 +761,52 @@ export function buildTools(deps: ToolDeps): Record<string, ToolHandler> {
         }
         return { tab_id: tabId, target: p.target, via: "input", files: r.names, multiple: !!r.multiple } satisfies UploadResult;
       }
-      // Not a file input: click it and answer the file chooser it opens.
+      // Not a file input: click it and answer the file picker it opens. Two signals, whichever
+      // comes first: CDP's intercepted file chooser, or the page calling input.click()/showPicker()
+      // on a file input (caught in the page, so it works even when Chrome would not show a picker,
+      // e.g. for a window that is not on screen).
       const r = await resolveTarget(t, p.target);
       if (r.disabled) fail("unsupported", `${r.description} is disabled`, "target_disabled");
-      try {
-        await cdp.send(tabId, "Page.setInterceptFileChooserDialog", { enabled: true });
-      } catch (e) {
-        if (cdpUnavailable(e)) fail("unsupported", `${r.description} is not a file input, and answering a file chooser needs the debugger`, "cdp_unavailable", "target the <input type=file> itself (find it with `bctl find file` or a CSS selector such as input[type=file])");
-        throw e;
+      const nonce = Math.random().toString(36).slice(2, 10);
+      await chrome.scripting.executeScript({ target: { tabId }, world: "MAIN", func: armFileChooserHook, args: [nonce] });
+      let intercepting = false;
+      if (!FORCE_FALLBACKS) {
+        try {
+          await cdp.send(tabId, "Page.setInterceptFileChooserDialog", { enabled: true });
+          intercepting = true;
+        } catch (e) {
+          if (!cdpUnavailable(e)) throw e;
+        }
       }
-      const waiter = cdp.waitForEvent(tabId, "Page.fileChooserOpened", 5_000);
+      const waiter = intercepting ? cdp.waitForEvent(tabId, "Page.fileChooserOpened", 5_000) : null;
+      let chooserEvent: Record<string, unknown> | null = null;
+      void waiter?.promise.then((ev) => {
+        chooserEvent = ev;
+      });
       try {
-        const dialogOpened = await cdpMouse(tabId, r.x, r.y, {});
-        if (dialogOpened) fail("dialog_pending", "a JavaScript dialog opened instead of a file chooser", "dialog_pending", "decide it with `bctl dialog accept|dismiss`");
-        const ev = await waiter.promise;
+        if (intercepting) {
+          const dialogOpened = await cdpMouse(tabId, r.x, r.y, {});
+          if (dialogOpened) fail("dialog_pending", "a JavaScript dialog opened instead of a file chooser", "dialog_pending", "decide it with `bctl dialog accept|dismiss`");
+        } else await page(t, "click_dom", { target: p.target });
+        const marked = `[data-bctl-chooser="${nonce}"]`;
+        const deadline = Date.now() + 5_000;
+        while (Date.now() < deadline) {
+          if (chooserEvent) break;
+          const hit = await chrome.scripting
+            .executeScript({ target: { tabId }, world: "ISOLATED", func: (sel: string) => !!document.querySelector(sel), args: [marked] })
+            .then((res) => !!res[0]?.result)
+            .catch(() => false);
+          if (hit) {
+            const set = await page(t, "set_files", { target: marked, files: p.files });
+            if (!set.ok) {
+              if (set.reason === "not_multiple") fail("invalid_params", `the file picker accepts one file; got ${p.files.length}`, "input_not_multiple");
+              fail("unsupported", "could not set files on the file input", "set_files_failed");
+            }
+            return { tab_id: tabId, target: p.target, via: "chooser", files: set.names, multiple: !!set.multiple } satisfies UploadResult;
+          }
+          await sleep(100);
+        }
+        const ev = chooserEvent as Record<string, unknown> | null;
         if (!ev) fail("not_found", `clicking ${r.description} did not open a file chooser`, "no_file_chooser", "target the <input type=file> or the control that opens the file picker");
         const mode = String(ev.mode ?? "selectSingle");
         if (p.files.length > 1 && mode !== "selectMultiple") fail("invalid_params", `the file chooser accepts one file; got ${p.files.length}`, "input_not_multiple");
@@ -746,8 +823,9 @@ export function buildTools(deps: ToolDeps): Record<string, ToolHandler> {
         if (res.exceptionDetails) fail("internal", `setting files failed: ${res.exceptionDetails.text ?? "exception"}`, "set_files_failed");
         return { tab_id: tabId, target: p.target, via: "chooser", files: res.result.value?.names ?? [], multiple: mode === "selectMultiple" } satisfies UploadResult;
       } finally {
-        waiter.cancel();
-        await cdp.send(tabId, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => undefined);
+        waiter?.cancel();
+        if (intercepting) await cdp.send(tabId, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => undefined);
+        await chrome.scripting.executeScript({ target: { tabId }, world: "MAIN", func: disarmFileChooserHook, args: [nonce] }).catch(() => undefined);
       }
     },
     async "tool.download"(raw) {
