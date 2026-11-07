@@ -6,10 +6,12 @@ import { connect } from "node:net";
 import { DEFAULT_WS_PORT, type RequestFrame, type ResponseFrame, RpcFailure, rpcError } from "@browser-control/protocol";
 import { pidAlive, readDaemonInfo } from "./daemon/daemon";
 import { bctlHome, logPath, sockPath } from "./paths";
+import { remoteCall, remoteTarget } from "./remote";
 
 let seq = 0;
 
 export async function rpc<T = unknown>(method: string, params?: unknown, opts: { timeoutMs?: number; autoStart?: boolean } = {}): Promise<T> {
+  if (remoteTarget()) return once<T>(method, params, opts.timeoutMs ?? 90_000);
   const autoStart = opts.autoStart ?? process.env.BCTL_AUTO_START !== "0";
   try {
     return await once<T>(method, params, opts.timeoutMs ?? 90_000);
@@ -25,7 +27,22 @@ function isConnRefused(e: unknown): boolean {
   return code === "ECONNREFUSED" || code === "ENOENT" || code === "ECONNRESET" || code === "EPIPE";
 }
 
-export function once<T>(method: string, params: unknown, timeoutMs: number): Promise<T> {
+/**
+ * One request to the daemon: the local socket, or the paired remote daemon when this machine is
+ * configured for one (`bctl remote use`, BCTL_REMOTE). `local: true` always uses the socket.
+ */
+export async function once<T>(method: string, params: unknown, timeoutMs: number, opts: { local?: boolean } = {}): Promise<T> {
+  const remote = opts.local ? null : remoteTarget();
+  if (remote) {
+    const id = `r${process.pid}-${++seq}`;
+    const resp = await remoteCall(remote, { id, method, ...(params !== undefined ? { params } : {}) }, timeoutMs);
+    if ("error" in resp) throw new RpcFailure(resp.error);
+    return resp.result as T;
+  }
+  return onceLocal<T>(method, params, timeoutMs);
+}
+
+function onceLocal<T>(method: string, params: unknown, timeoutMs: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const id = `c${process.pid}-${++seq}`;
     const sock = connect(sockPath());
@@ -62,9 +79,9 @@ export function once<T>(method: string, params: unknown, timeoutMs: number): Pro
   });
 }
 
-export async function daemonReachable(): Promise<boolean> {
+export async function daemonReachable(opts: { local?: boolean } = {}): Promise<boolean> {
   try {
-    await once("system.ping", undefined, 1500);
+    await once("system.ping", undefined, 1500, opts);
     return true;
   } catch {
     return false;
@@ -74,7 +91,7 @@ export async function daemonReachable(): Promise<boolean> {
 /** Spawn `bctl daemon start --foreground` detached, logging to ~/.bctl/daemon.log, and wait until it answers. */
 export async function startDaemonDetached(port?: number): Promise<void> {
   const info = readDaemonInfo();
-  if (info && pidAlive(info.pid) && (await daemonReachable())) return;
+  if (info && pidAlive(info.pid) && (await daemonReachable({ local: true }))) return;
   mkdirSync(bctlHome(), { recursive: true });
   const out = openSync(logPath(), "a");
   const args = [process.argv[1]!, "daemon", "start", "--foreground", "--port", String(port ?? process.env.BCTL_PORT ?? DEFAULT_WS_PORT)];
@@ -82,7 +99,7 @@ export async function startDaemonDetached(port?: number): Promise<void> {
   child.unref();
   const deadline = Date.now() + 8000;
   while (Date.now() < deadline) {
-    if (await daemonReachable()) return;
+    if (await daemonReachable({ local: true })) return;
     if (child.exitCode !== null) break;
     await new Promise((r) => setTimeout(r, 120));
   }

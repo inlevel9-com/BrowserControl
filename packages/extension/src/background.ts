@@ -12,7 +12,9 @@ import {
   type RpcError,
 } from "@browser-control/protocol";
 import { Cdp } from "./cdp";
+import { DownloadTracker } from "./downloads";
 import { detectBrowser, EXTENSION_VERSION, loadSettings, type Settings, wsUrlForPort } from "./identity";
+import { Recorder } from "./recorder";
 import { SessionManager } from "./sessions";
 import { buildTools, ToolError } from "./tools";
 import { WsTransport } from "./transport";
@@ -30,9 +32,14 @@ let heartbeat: ReturnType<typeof setInterval> | null = null;
 let browserMeta = { name: "chromium", version: "unknown" };
 const inflight = new Map<string, AbortController>();
 
+const downloads = new DownloadTracker(sessions, cdp);
+const recorder = new Recorder(cdp, (event, payload) => emit(event, payload));
+
 const tools = buildTools({
   sessions,
   cdp,
+  downloads,
+  recorder,
   notifyControlled(tabId, sessionId) {
     chrome.tabs.sendMessage(tabId, { type: "bctl.control", sessionId }).catch(() => {});
   },
@@ -204,6 +211,7 @@ chrome.windows.onRemoved.addListener((windowId) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
+  recorder.end(tabId, "tab_closed");
   cdp.forget(tabId);
   for (const s of sessions.sessions.values()) {
     s.borrowed.delete(tabId);

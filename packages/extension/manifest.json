@@ -46,7 +46,8 @@
     "scripting",
     "tabs",
     "storage",
-    "cookies"
+    "cookies",
+    "downloads"
   ],
   "host_permissions": [
     "<all_urls>"

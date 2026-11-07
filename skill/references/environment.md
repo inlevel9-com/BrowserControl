@@ -40,5 +40,21 @@ their user agent looks like Chrome.
 
 ## Remote agents
 
-The CLI and daemon must run on the machine where the browser runs. Remote pairing is not part
-of this version; run the agent on the same machine or over SSH to it.
+When the agent runs on another machine (a dev box, a VM, an SSH host), the user pairs it with
+the browser's machine once:
+
+1. On the browser's machine: `bctl remote pair --name <machine>` prints a pairing command.
+2. On the agent's machine: `bctl remote use '<pairing>'`. From then on every `bctl` command
+   there goes to the paired daemon; `bctl status` shows `remote daemon at …`.
+
+The remote listener binds 127.0.0.1 by default, so the user usually forwards the port:
+`ssh -N -R 52811:127.0.0.1:52811 <user>@<agent machine>` (run on the browser's machine).
+`permission_denied` with reason `remote_auth_failed` means the pairing was revoked or is wrong;
+ask the user to pair again. Never print or store the pairing string anywhere else.
+`BCTL_REMOTE=off` makes one command use the local daemon.
+
+## MCP clients
+
+`bctl mcp` serves the same tools over the Model Context Protocol (stdio) for clients that
+cannot run shell commands, such as the Claude desktop app's chat. `bctl mcp --print-config
+claude-desktop` (or `claude-code`, `codex`, `cursor`) prints the configuration to add.

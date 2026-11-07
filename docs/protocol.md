@@ -1,4 +1,4 @@
-# Wire protocol 1.0
+# Wire protocol 1.1
 
 Frames (both links):
 
@@ -24,7 +24,14 @@ multiple_browsers_online no_browser_connected browser_disconnected internal`.
 | `browser.list` | – | `{browsers: BrowserEntry[]}` |
 | `session.start` | `{browser?, focused?, width?, height?, incognito?, controller?}` | `{session_id, browser_instance_id, browser, agent_window_id, active_tab_id}` |
 | `session.stop` / `session.stop_all` / `session.list` / `session.resume` | | |
+| `session.resume` | `{session_id}` | `{session_id, interrupted: false}` |
 | `tool.wait_ms` | `{ms}` | `{waited_ms}` (served by the daemon) |
+| `record.start` | `{session_id, tab_id?, format: mp4\|webm\|avi, max_secs, quality, max_width, max_height}` | `{recording_id, tab_id, max_secs}` |
+| `record.stop` | `{session_id, format?}` | `{recording_id, artifact, frames, duration_ms, format, encoder, reason}` |
+| `download.fetch` | `{session_id, download_id}` | `ArtifactInfo` for a completed session download |
+| `artifact.read` | `{artifact_id, offset, length ≤ 4 MiB}` | `{data (base64), offset, size, eof}` |
+| `artifact.list` | `{session_id?}` | `{artifacts}` |
+| `remote.status` / `remote.reload` | – | `{enabled, listening?, clients}` (local socket only) |
 | `tool.*` | see below; daemon injects nothing, forwards as-is | |
 
 ## Daemon ↔ extension
@@ -34,7 +41,9 @@ Extension sends `system.handshake` first:
 → `{server, version, protocol_version, process?:{pid,name,browser?,path?}}`.
 
 Events from the extension: `system.heartbeat` (20 s), `session.window_closed`,
-`session.user_interrupt`, `dialog.changed`. Daemon → extension requests: every `tool.*`,
+`session.user_interrupt`, `dialog.changed`, `record.frame`
+`{session_id, recording_id, data (base64 JPEG), ts, width?, height?}`, and `record.ended`
+`{session_id, recording_id, reason}`. Daemon → extension requests: every `tool.*`,
 `system.ping`, and `cancel {rpc_id}`.
 
 ## Tools
@@ -73,6 +82,37 @@ traversed for snapshots).
 | `tool.dialog_status` / `dialog_handle` | `accept, text` | |
 | `tool.cookies` | `domain?` | names and flags only, never values |
 | `tool.pdf` | `landscape` | base64 PDF |
+| `tool.upload` | `target, files[{name, mime, data}]` | `via: input\|chooser, files[], multiple` |
+| `tool.download` | `url \| target, filename?` | `download: DownloadInfo` |
+| `tool.downloads` | `download_id?, wait, since_ms, timeout_ms` | `downloads[], waited?, timed_out?` |
+| `tool.tables` | `target?, max_rows` | `tables[{index, ref, kind, caption?, headers[], rows[][], row_count, column_count, truncated}]` |
+| `tool.record_start` / `tool.record_stop` | `recording_id` (daemon-internal) | |
+
+`tool.upload` sets files directly on an `<input type=file>` (the target itself, a label's
+control, or the only file input inside the target). Otherwise it clicks the target with the
+file chooser intercepted (`Page.setInterceptFileChooserDialog`) and sets the files on the input
+the chooser reports. Bytes travel inside the request, so the CLI's machine supplies the files.
+
+Downloads are only listed for the session that caused them: started with `tool.download`, or
+triggered in a controlled tab (matched through `Page.downloadWillBegin` or the referrer).
+
+## Remote link (CLI on another machine → daemon)
+
+Enabled with `bctl remote enable`; TCP on `127.0.0.1:52811` by default. Each connection carries
+one request:
+
+```
+C → S   {"proto":"bctl-remote/1","client_id":"…","nonce":"<32 bytes, base64>"}\n
+S → C   {"proto":"bctl-remote/1","nonce":"<32 bytes, base64>"}\n
+keys    HKDF-SHA256(pairing secret, salt = nonce_c ‖ nonce_s, info "bctl-remote/1 keys") → c2s ‖ s2c
+C → S   u32 length ‖ AES-256-GCM(c2s, iv = 1 ‖ counter, aad "bctl-remote/1", request frame)
+S → C   u32 length ‖ AES-256-GCM(s2c, iv = 2 ‖ counter, …, response frame)
+```
+
+A client without the secret cannot produce a frame the daemon opens, and the daemon proves it
+holds the secret by answering. Unknown client ids get the same handshake and fail at the first
+frame. Remote callers cannot use `system.shutdown` or `remote.*`; sessions they start carry
+`remote: <name>` in the controller label shown on the tab overlay.
 
 Snapshot line format:
 

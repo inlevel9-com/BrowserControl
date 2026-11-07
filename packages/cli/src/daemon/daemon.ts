@@ -1,14 +1,23 @@
 // Daemon: JSON-lines IPC for the CLI, session routing to extensions, per-session queues, lifecycle files.
-import { existsSync, mkdirSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { dirname } from "node:path";
 import {
+  type ArtifactReadParams,
   type BrowserListResult,
+  type DownloadFetchParams,
+  type DownloadsResult,
   DEFAULT_WS_PORT,
   isRequestFrame,
   isToolMethod,
   methodEffect,
   PROTOCOL_VERSION,
+  type RecordFrameEvent,
+  type RecordStartParams,
+  type RecordStartResult,
+  type RecordStopParams,
+  type RecordStopResult,
+  type RemoteStatusResult,
   type RequestFrame,
   type ResponseFrame,
   RpcFailure,
@@ -23,7 +32,10 @@ import {
   type WaitMsParams,
 } from "@browser-control/protocol";
 import { bctlHome, daemonJsonPath, lockPath, logPath, runDir, sockPath } from "../paths";
+import { readServerConfig, type RemoteContext, RemoteServer } from "../remote";
 import { VERSION } from "../version";
+import { ArtifactStore } from "./artifacts";
+import { type Recording, RecordingManager } from "./recording";
 import { type BrowserClient, DaemonState, type DaemonSession } from "./state";
 import { asRpcError, ExtensionServer } from "./ws-server";
 
@@ -65,9 +77,15 @@ export class Daemon {
   private logFd: number | null = null;
   private shuttingDown = false;
   private idleTimer: ReturnType<typeof setInterval> | null = null;
+  readonly artifacts = new ArtifactStore();
+  readonly recordings: RecordingManager;
+  private remote: RemoteServer;
+  private remoteError = "";
 
   constructor(private readonly opts: { port: number; foreground: boolean }) {
     this.ext = new ExtensionServer(this.state, (m) => this.log(m));
+    this.recordings = new RecordingManager(this.artifacts, (m) => this.log(m));
+    this.remote = new RemoteServer((req, ctx) => this.handle(req, ctx), (m) => this.log(m));
     this.ext.on("browser.disconnected", (b: BrowserClient, reason: string) => {
       this.log(`browser disconnected: ${b.instanceId} (${reason})`);
       for (const s of Array.from(this.state.sessions.values())) {
@@ -98,6 +116,8 @@ export class Daemon {
     const info: DaemonInfo = { pid: process.pid, sock_path: sockPath(), ws_port: this.wsPort, version: VERSION, protocol_version: PROTOCOL_VERSION, started_at: new Date(this.startedAt).toISOString() };
     writeFileSync(daemonJsonPath(), JSON.stringify(info, null, 2));
     this.idleTimer = setInterval(() => this.reapIdleSessions(), 60_000);
+    this.recordings.cleanup();
+    await this.applyRemoteConfig();
     this.log(`daemon ${VERSION} started pid=${process.pid} ws=127.0.0.1:${this.wsPort} ipc=${sockPath()} home=${bctlHome()}`);
     const stop = () => void this.shutdown("signal");
     process.on("SIGINT", stop);
@@ -154,10 +174,47 @@ export class Daemon {
     sock.on("error", () => {});
   }
 
-  private async handle(req: RequestFrame): Promise<ResponseFrame> {
+  /** Start, move, or stop the remote listener to match ~/.bctl/remote.json. */
+  private async applyRemoteConfig(): Promise<void> {
+    const cfg = readServerConfig();
+    this.remoteError = "";
+    try {
+      if (!cfg.enabled) {
+        if (this.remote.listening) this.log("remote access disabled");
+        await this.remote.close();
+        return;
+      }
+      const want = `${cfg.host}:${cfg.port}`;
+      if (this.remote.listening && (this.remote.listening === want || this.remote.listening === `[${cfg.host}]:${cfg.port}`)) return;
+      const at = await this.remote.listen(cfg.host, cfg.port);
+      this.log(`remote access listening on ${at} (${cfg.clients.length} paired client(s))`);
+    } catch (e) {
+      this.remoteError = (e as Error).message;
+      this.log(`remote access failed: ${this.remoteError}`);
+    }
+  }
+
+  private remoteStatus(): RemoteStatusResult & { error?: string } {
+    const cfg = readServerConfig();
+    return {
+      enabled: cfg.enabled,
+      ...(this.remote.listening ? { listening: this.remote.listening } : {}),
+      ...(this.remoteError ? { error: this.remoteError } : {}),
+      clients: cfg.clients.map((c) => ({ client_id: c.client_id, name: c.name, created_at: c.created_at, ...(c.last_used_at ? { last_used_at: c.last_used_at } : {}) })),
+    };
+  }
+
+  private async handle(req: RequestFrame, ctx?: RemoteContext): Promise<ResponseFrame> {
     const { id, method } = req;
     const params = (req.params ?? {}) as Record<string, unknown>;
     try {
+      if (ctx && (method === "system.shutdown" || method.startsWith("remote."))) {
+        throw new RpcFailure(rpcError("permission_denied", `${method} is only available on the browser's machine`, { reason: "remote_forbidden" }));
+      }
+      if (ctx && method === "session.start") {
+        const c = (params.controller ?? {}) as { name?: string; project?: string };
+        params.controller = { name: c.name || "agent", project: [c.project, `remote: ${ctx.name}`].filter(Boolean).join(" · ") };
+      }
       const result = await this.dispatch(method, params);
       return { id, result };
     } catch (e) {
@@ -192,6 +249,26 @@ export class Daemon {
       }
       case "session.list":
         return { sessions: Array.from(this.state.sessions.values()).map((s) => this.state.sessionEntry(s)) } satisfies SessionListResult;
+      case "record.start":
+        return this.recordStart(params as unknown as RecordStartParams);
+      case "record.stop":
+        return this.recordStop(params as unknown as RecordStopParams);
+      case "download.fetch":
+        return this.downloadFetch(params as unknown as DownloadFetchParams);
+      case "artifact.read": {
+        const p = params as unknown as ArtifactReadParams;
+        return this.artifacts.read(String(p.artifact_id ?? ""), Number(p.offset ?? 0), Number(p.length ?? 0));
+      }
+      case "artifact.list":
+        return { artifacts: this.artifacts.list(params.session_id ? String(params.session_id) : undefined) };
+      case "remote.status":
+        return this.remoteStatus();
+      case "remote.reload":
+        await this.applyRemoteConfig();
+        return this.remoteStatus();
+      case "tool.record_start":
+      case "tool.record_stop":
+        throw new RpcFailure(rpcError("invalid_params", `${method} is internal; use record.start / record.stop`, { reason: "internal_method" }));
       case "tool.wait_ms": {
         const ms = Math.max(0, Math.min(Number((params as unknown as WaitMsParams).ms ?? 0), 600_000));
         await new Promise((r) => setTimeout(r, ms));
@@ -275,6 +352,8 @@ export class Daemon {
       }
     }
     this.log(`session ${id} stopped (returned ${result.returned_tabs.length}, closed ${result.closed_tabs.length})`);
+    const rec = this.finishRecording(id, "session_ended");
+    if (rec) await Promise.race([rec.catch(() => undefined), new Promise((r) => setTimeout(r, 15_000))]);
     return { session_id: id, ...result };
   }
 
@@ -282,9 +361,83 @@ export class Daemon {
     if (!this.state.sessions.delete(id)) return;
     this.state.tombstones.set(id, { reason, at: Date.now() });
     this.log(`session ${id} ended: ${reason}`);
+    this.finishRecording(id, "session_ended");
   }
 
-  private forwardTool(method: string, params: Record<string, unknown>): Promise<unknown> {
+  // ------------------------------------------------------------------------- recording
+
+  private finishRecording(sessionId: string, reason: string): Promise<RecordStopResult> | undefined {
+    const rec = this.recordings.activeFor(sessionId);
+    if (!rec) return undefined;
+    const p = this.recordings.finish(rec, reason);
+    p.catch(() => undefined);
+    return p;
+  }
+
+  private async recordStart(p: RecordStartParams): Promise<RecordStartResult> {
+    const s = this.requireSession(String(p.session_id ?? ""));
+    const format = p.format ?? "mp4";
+    if (!["mp4", "webm", "avi"].includes(format)) throw new RpcFailure(rpcError("invalid_params", `unknown format ${format}; use mp4, webm or avi`));
+    const maxSecs = Math.max(1, Math.min(Number(p.max_secs ?? 300), 3600));
+    const rec: Recording = this.recordings.start(s.id, format);
+    let r: { tab_id: number };
+    try {
+      r = (await this.forwardTool("tool.record_start", {
+        session_id: s.id,
+        ...(p.tab_id !== undefined ? { tab_id: p.tab_id } : {}),
+        recording_id: rec.id,
+        quality: p.quality,
+        max_width: p.max_width,
+        max_height: p.max_height,
+      })) as { tab_id: number };
+    } catch (e) {
+      this.recordings.discard(rec);
+      throw e;
+    }
+    rec.maxTimer = setTimeout(() => {
+      this.log(`recording ${rec.id} reached ${maxSecs}s; stopping`);
+      const b = this.state.browsers.get(s.browserInstanceId);
+      if (b) void this.ext.call(b, "tool.record_stop", { session_id: s.id }, 10_000).catch(() => undefined);
+      void this.recordings.finish(rec, "max_duration").catch(() => undefined);
+    }, maxSecs * 1000);
+    this.log(`recording ${rec.id} started for session ${s.id} tab ${r.tab_id} (${format}, max ${maxSecs}s)`);
+    return { recording_id: rec.id, session_id: s.id, tab_id: r.tab_id, max_secs: maxSecs };
+  }
+
+  private async recordStop(p: RecordStopParams): Promise<RecordStopResult> {
+    const sid = String(p.session_id ?? "");
+    const rec = this.recordings.lastFor(sid);
+    if (!rec) {
+      this.requireSession(sid);
+      throw new RpcFailure(rpcError("not_found", `session ${sid} is not recording`, { reason: "not_recording", hint: "start one with `bctl record start`" }));
+    }
+    if (!rec.finishing && this.state.sessions.has(sid)) {
+      const s = this.state.sessions.get(sid)!;
+      const b = this.state.browsers.get(s.browserInstanceId);
+      if (b) await this.ext.call(b, "tool.record_stop", { session_id: sid }, 10_000).catch((e) => this.log(`record stop: ${asRpcError(e).message}`));
+    }
+    return this.recordings.finish(rec, "stopped", p.format);
+  }
+
+  // ------------------------------------------------------------------------- downloads
+
+  private async downloadFetch(p: DownloadFetchParams) {
+    const s = this.requireSession(String(p.session_id ?? ""));
+    const id = Number(p.download_id);
+    const r = (await this.forwardTool("tool.downloads", { session_id: s.id, download_id: id })) as DownloadsResult;
+    const d = r.waited;
+    if (!d) throw new RpcFailure(rpcError("not_found", `download ${id} not found`, { reason: "download_not_found" }));
+    if (d.state !== "complete") throw new RpcFailure(rpcError("unsupported", `download ${id} is ${d.state}${d.error ? ` (${d.error})` : ""}`, { reason: `download_${d.state}`, hint: d.state === "in_progress" ? "wait with `bctl downloads wait`" : "start the download again" }));
+    let size: number;
+    try {
+      size = statSync(d.filename).size;
+    } catch {
+      throw new RpcFailure(rpcError("not_found", `downloaded file ${d.filename} is gone`, { reason: "download_file_missing" }));
+    }
+    return this.artifacts.add({ kind: "download", name: d.basename, mime: d.mime ?? "application/octet-stream", path: d.filename, size, session_id: s.id });
+  }
+
+  forwardTool(method: string, params: Record<string, unknown>): Promise<unknown> {
     const s = this.requireSession(String(params.session_id ?? ""));
     if (s.interrupted && methodEffect(method) === "mutate") {
       throw new RpcFailure(rpcError("user_aborted", `the user pressed Stop on session ${s.id}; browser actions are blocked`, { reason: "user_interrupt", hint: "ask the user how to proceed; `bctl session resume <id>` re-enables actions, `bctl session stop <id>` ends it" }));
@@ -319,6 +472,17 @@ export class Daemon {
         }
         break;
       }
+      case "record.frame":
+        this.recordings.addFrame(payload as unknown as RecordFrameEvent);
+        break;
+      case "record.ended": {
+        const rec = this.recordings.activeFor(sid);
+        if (rec && rec.id === payload.recording_id) {
+          this.log(`recording ${rec.id} ended: ${payload.reason}`);
+          void this.recordings.finish(rec, String(payload.reason ?? "ended")).catch(() => undefined);
+        }
+        break;
+      }
       case "dialog.changed":
         this.log(`session ${sid}: dialog ${payload.dialog ? "opened" : "closed"} on tab ${payload.tab_id}`);
         break;
@@ -346,6 +510,7 @@ export class Daemon {
     if (this.idleTimer) clearInterval(this.idleTimer);
     for (const id of Array.from(this.state.sessions.keys())) await this.sessionStop(id).catch(() => {});
     await this.ext.close().catch(() => {});
+    await this.remote.close().catch(() => {});
     await new Promise<void>((r) => (this.ipc ? this.ipc.close(() => r()) : r()));
     for (const f of [daemonJsonPath(), lockPath()]) rmSync(f, { force: true });
     if (process.platform !== "win32") rmSync(sockPath(), { force: true });

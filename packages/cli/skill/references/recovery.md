@@ -27,3 +27,13 @@ Every error has `code`, `message`, and often `data.reason` and `data.hint`. Read
    navigation, direct URL) or report; do not loop.
 
 Always finish with `bctl session stop <id>`, also after failures.
+
+## Files
+
+- `upload` fails with `input_not_multiple`: the input takes one file; upload one at a time or ask
+  which file the user wants.
+- `no_file_chooser`: the target neither is a file input nor opened a picker when clicked. Find the
+  input with `bctl find file`, or `bctl upload "input[type=file]" …`.
+- `downloads wait` times out: the click may not have started a download (check `bctl network`),
+  or the browser asks where to save each file — ask the user to turn that off or to save it.
+- `download_not_in_session`: only downloads started from this session's tabs can be fetched.

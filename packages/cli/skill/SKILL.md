@@ -54,7 +54,11 @@ When only one session exists, `--session` may be omitted (bctl says so on stderr
 | Visible text | `bctl text` / `bctl text @e7` / `bctl text "#main"` |
 | HTML | `bctl html [target] [--inner]` |
 | Screenshot | `bctl screenshot --out shot.png [--full-page] [--target @e3]` |
+| Tables as data | `bctl tables [target] [--index 0] [--format md\|csv\|tsv\|json] [--out file]` |
 | Page script | `bctl eval "document.title"` (promises awaited) |
+
+Prefer `bctl tables` over scraping text when the page shows a table or grid: spans are
+expanded and multi-row headers are joined (`Sales / Q1`).
 
 ## Act
 
@@ -69,6 +73,18 @@ When only one session exists, `--session` may be omitted (bctl says so on stderr
 | Hover menu | `bctl hover @e6` then snapshot |
 | Scroll | `bctl scroll --down 800` / `--bottom` / `bctl scroll-to @e9` |
 | Wait | `bctl wait element "#result"` / `bctl wait nav --url checkout` / `bctl wait ms 500` |
+
+## Files and video
+
+| Need | Command |
+| --- | --- |
+| Upload | `bctl upload @e7 report.pdf [more files…]` — the target is the file input or the button that opens the file picker |
+| Download a link or URL | `bctl download @e9 --out ./report.csv` (uses the browser's cookies, waits until done) |
+| A click started a download | `bctl downloads wait --out ./` right after the click; `bctl downloads` lists this session's downloads |
+| Record the tab | `bctl record start` … `bctl record stop --out demo.mp4` (mp4/webm need ffmpeg; otherwise an .avi is saved) |
+
+Upload only files the user asked you to upload. `--out` paths are on the machine running
+`bctl`, which also works when the browser is on another machine (remote pairing).
 
 Actions report `via: cdp` (trusted input, like a real user) or `via: dom` (synthetic events,
 used when the debugger cannot attach). If a result includes `navigated_to`, snapshot again.
@@ -101,7 +117,7 @@ is open. **Never repeat the action.** Decide it: `bctl dialog status`, then
 
 | When | Read |
 | --- | --- |
-| No CLI, daemon won't start, no browser connected, sandboxed host | [environment](references/environment.md) |
+| No CLI, daemon won't start, no browser connected, sandboxed host, remote browser machine | [environment](references/environment.md) |
 | Specific browser or profile required, multiple browsers, borrowing | [tabs and browsers](references/tabs-and-browsers.md) |
 | Console, network, failing requests, slow pages | [debugging](references/debugging.md) |
 | Errors, stuck pages, interruptions | [recovery](references/recovery.md) |

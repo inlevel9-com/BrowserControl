@@ -18,7 +18,11 @@ export type PageOp =
   | "prepare_fill"
   | "wait_state"
   | "page_info"
-  | "read_value";
+  | "read_value"
+  | "file_input"
+  | "set_files"
+  | "link_url"
+  | "tables";
 
 export interface SnapshotNode {
   ref?: string;
@@ -503,6 +507,147 @@ export function pageAgent(op: PageOp, args: any): any {
       if (state === "visible") return { matched: !!el && isVisible(el) };
       if (state === "hidden") return { matched: !el || !isVisible(el) };
       return { matched: false };
+    }
+    case "file_input": {
+      // Find the <input type=file> a target stands for: the input itself, a label's control,
+      // or a single file input inside the target.
+      const el = resolveTarget(args.target);
+      if (!el) return { found: false };
+      const isFile = (e: Element | null | undefined): e is HTMLInputElement => !!e && e.tagName === "INPUT" && (e as HTMLInputElement).type.toLowerCase() === "file";
+      let input: HTMLInputElement | null = null;
+      if (isFile(el)) input = el;
+      else if (el.tagName === "LABEL" && isFile((el as HTMLLabelElement).control)) input = (el as HTMLLabelElement).control as HTMLInputElement;
+      else {
+        const inner = el.querySelectorAll("input[type=file]");
+        if (inner.length === 1) input = inner[0] as HTMLInputElement;
+      }
+      if (!input) return { found: true, kind: "other", description: describe(el) };
+      return { found: true, kind: "input", ref: refFor(input), multiple: input.multiple, accept: input.accept, disabled: input.disabled, description: describe(input) };
+    }
+    case "set_files": {
+      const el = resolveTarget(args.target) as HTMLInputElement | null;
+      if (!el) return { found: false };
+      if (el.tagName !== "INPUT" || el.type.toLowerCase() !== "file") return { found: true, ok: false, reason: "not_file_input" };
+      const files: Array<{ name: string; mime?: string; data: string }> = args.files ?? [];
+      if (files.length > 1 && !el.multiple) return { found: true, ok: false, reason: "not_multiple" };
+      const dt = new DataTransfer();
+      for (const f of files) {
+        const bin = atob(f.data);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        dt.items.add(new File([bytes], f.name, { type: f.mime || "application/octet-stream", lastModified: Date.now() }));
+      }
+      el.files = dt.files;
+      el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      return { found: true, ok: true, names: Array.from(el.files ?? []).map((f) => f.name), multiple: el.multiple };
+    }
+    case "link_url": {
+      const el = resolveTarget(args.target);
+      if (!el) return { found: false };
+      const a = (el.closest("a[href]") ?? el.querySelector("a[href]")) as HTMLAnchorElement | null;
+      if (!a) return { found: true, url: null, description: describe(el) };
+      return { found: true, url: a.href, download: a.getAttribute("download") };
+    }
+    case "tables": {
+      const maxRows: number = args.max_rows ?? 500;
+      const scope: Element | null = args.target ? resolveTarget(args.target) : document.body;
+      if (!scope) return { found: false };
+      const SEL = "table, [role=table], [role=grid], [role=treegrid]";
+      let candidates: Element[] = scope.matches(SEL) ? [scope] : Array.from(scope.querySelectorAll(SEL));
+      if (!scope.matches(SEL)) {
+        const outer = scope.closest(SEL);
+        if (outer && candidates.length === 0) candidates = [outer];
+      }
+      candidates = candidates.filter((t) => {
+        const r = (t.getAttribute("role") ?? "").toLowerCase();
+        return r !== "presentation" && r !== "none" && isVisible(t);
+      });
+      const cellText = (c: Element): string => norm((c as HTMLElement).innerText ?? c.textContent);
+      const tables = [];
+      for (const t of candidates) {
+        let header: string[][] = [];
+        let body: string[][] = [];
+        if (t.tagName === "TABLE") {
+          // Expand rowspan/colspan into a rectangular grid.
+          const rows = Array.from((t as HTMLTableElement).rows);
+          const grid: string[][] = [];
+          const isHead: boolean[] = [];
+          const hasThead = !!(t as HTMLTableElement).tHead;
+          const pending: Array<{ left: number; text: string } | undefined> = [];
+          rows.forEach((tr, ri) => {
+            const line: string[] = [];
+            let col = 0;
+            const place = (text: string) => {
+              line[col] = text;
+              col++;
+            };
+            const fillPending = () => {
+              while (pending[col] && pending[col]!.left > 0) {
+                place(pending[col]!.text);
+                pending[col - 1]!.left--;
+              }
+            };
+            fillPending();
+            for (const cell of Array.from(tr.cells)) {
+              fillPending();
+              const text = cellText(cell);
+              const cs = Math.max(1, Math.min(cell.colSpan || 1, 100));
+              const rs = Math.max(1, Math.min(cell.rowSpan || 1, 1000));
+              for (let k = 0; k < cs; k++) {
+                if (rs > 1) pending[col] = { left: rs - 1, text };
+                place(text);
+              }
+            }
+            fillPending();
+            grid[ri] = line;
+            const section = tr.parentElement?.tagName;
+            const allTh = tr.cells.length > 0 && Array.from(tr.cells).every((c) => c.tagName === "TH");
+            // Without <thead>, leading rows made only of <th> are the header.
+            isHead[ri] = section === "THEAD" || (!hasThead && allTh && (ri === 0 || isHead[ri - 1] === true));
+          });
+          const width = Math.max(0, ...grid.map((r) => r.length));
+          for (const r of grid) for (let i = 0; i < width; i++) if (r[i] === undefined) r[i] = "";
+          grid.forEach((r, i) => (isHead[i] ? header : body).push(r));
+        } else {
+          const rows = Array.from(t.querySelectorAll("[role=row]")).filter((r) => r.closest(SEL) === t);
+          for (const r of rows) {
+            const cells = Array.from(r.querySelectorAll("[role=cell], [role=gridcell], [role=columnheader], [role=rowheader]")).filter((c) => c.closest("[role=row]") === r);
+            const line = cells.map(cellText);
+            if (cells.length && cells.every((c) => c.getAttribute("role") === "columnheader")) header.push(line);
+            else body.push(line);
+          }
+        }
+        if (header.length === 0 && body.length === 0) continue;
+        const width = Math.max(0, ...header.map((r) => r.length), ...body.map((r) => r.length));
+        const headers: string[] = [];
+        for (let i = 0; i < width; i++) {
+          const parts: string[] = [];
+          for (const h of header) {
+            const v = h[i] ?? "";
+            if (v && parts[parts.length - 1] !== v) parts.push(v);
+          }
+          headers.push(parts.join(" / "));
+        }
+        body = body.map((r) => {
+          const out = r.slice();
+          while (out.length < width) out.push("");
+          return out;
+        });
+        const caption = t.tagName === "TABLE" ? norm((t as HTMLTableElement).caption?.textContent) : norm(t.getAttribute("aria-label"));
+        tables.push({
+          index: tables.length,
+          ref: refFor(t),
+          kind: t.tagName === "TABLE" ? "table" : (t.getAttribute("role") ?? "table"),
+          ...(caption ? { caption } : {}),
+          headers,
+          rows: body.slice(0, maxRows),
+          row_count: body.length,
+          column_count: width,
+          truncated: body.length > maxRows,
+        });
+      }
+      return { found: true, url: location.href, tables };
     }
     default:
       return { error: `unknown op ${op}` };

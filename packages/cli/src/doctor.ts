@@ -6,6 +6,7 @@ import { daemonReachable, once } from "./client";
 import { pidAlive, readDaemonInfo } from "./daemon/daemon";
 import { bctlHome, logPath, sockPath } from "./paths";
 import { harnesses, SKILL_NAME } from "./skill-install";
+import { windowsBrowserPaths } from "./win-paths";
 import { VERSION } from "./version";
 
 export interface Check {
@@ -39,8 +40,9 @@ const BROWSERS: KnownBrowser[] = [
 export function installedBrowsers(): Array<{ id: string; name: string; path: string }> {
   const out: Array<{ id: string; name: string; path: string }> = [];
   for (const b of BROWSERS) {
-    const paths = process.platform === "darwin" ? b.mac : process.platform === "linux" ? b.linux : b.win;
-    for (const p of paths ?? []) if (existsSync(p)) out.push({ id: b.id, name: b.name, path: p });
+    const paths = process.platform === "darwin" ? b.mac : process.platform === "linux" ? b.linux : windowsBrowserPaths(b.id);
+    const hit = (paths ?? []).find((p) => existsSync(p));
+    if (hit) out.push({ id: b.id, name: b.name, path: hit });
   }
   return out;
 }

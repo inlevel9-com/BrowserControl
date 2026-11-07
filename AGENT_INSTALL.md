@@ -16,3 +16,8 @@ Follow these steps on the user's machine. Stop and tell the user when a step nee
    `bctl daemon start --foreground` once to read the error.
 7. **First task**: `bctl session start --json`, `bctl open https://example.com --session <id>`,
    `bctl snapshot --session <id>`, `bctl session stop <id>`.
+8. **Optional, MCP clients** (Claude desktop app chat, Cursor, …): print the configuration with
+   `bctl mcp --print-config claude-desktop` (or `claude-code`, `codex`, `json`) and show the user
+   where to add it. Do not edit the app's config file without the user's OK.
+9. **Optional, recordings**: `ffmpeg -version`. Without ffmpeg, recordings are saved as .avi;
+   suggest installing it if the user wants mp4.

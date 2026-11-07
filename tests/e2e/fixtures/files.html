@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Files Fixture</title>
+    <style>
+      #ticker { font: 32px monospace; }
+    </style>
+  </head>
+  <body>
+    <h1>Files and tables</h1>
+
+    <section>
+      <label for="single">Single file</label>
+      <input id="single" type="file" />
+      <div id="single-out"></div>
+
+      <input id="multi" type="file" multiple style="display: none" />
+      <button id="pick" type="button" onclick="document.getElementById('multi').click()">Choose files</button>
+      <div id="multi-out"></div>
+    </section>
+
+    <section>
+      <a id="dl" href="/download/report.csv">Download report</a>
+    </section>
+
+    <table id="t1">
+      <caption>Scores</caption>
+      <thead>
+        <tr><th>Name</th><th>Score</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Ann</td><td>90</td></tr>
+        <tr><td>Bo</td><td>85</td></tr>
+      </tbody>
+    </table>
+
+    <table id="t2">
+      <tr><th rowspan="2">Region</th><th colspan="2">Sales</th></tr>
+      <tr><th>Q1</th><th>Q2</th></tr>
+      <tr><td>North</td><td>10</td><td>20</td></tr>
+      <tr><td rowspan="2">East</td><td>1</td><td>2</td></tr>
+      <tr><td>3</td><td>4</td></tr>
+    </table>
+
+    <div id="g1" role="grid" aria-label="People">
+      <div role="row"><span role="columnheader">First</span><span role="columnheader">Last</span></div>
+      <div role="row"><span role="gridcell">Ada</span><span role="gridcell">Lovelace</span></div>
+      <div role="row"><span role="gridcell">Alan</span><span role="gridcell">Turing</span></div>
+    </div>
+
+    <div id="ticker">0</div>
+
+    <script>
+      document.getElementById("single").addEventListener("change", async (e) => {
+        const f = e.target.files[0];
+        document.getElementById("single-out").textContent = f ? `${f.name}:${f.size}:${await f.text()}` : "none";
+      });
+      document.getElementById("multi").addEventListener("change", (e) => {
+        document.getElementById("multi-out").textContent = Array.from(e.target.files).map((f) => `${f.name}:${f.type}`).join(",");
+      });
+      let n = 0;
+      setInterval(() => {
+        n++;
+        const t = document.getElementById("ticker");
+        t.textContent = String(n);
+        t.style.color = n % 2 ? "crimson" : "navy";
+      }, 100);
+    </script>
+  </body>
+</html>

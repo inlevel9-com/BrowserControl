@@ -1,11 +1,20 @@
 // bctl command tree. Human-readable output by default; --json for machines.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { closeSync, existsSync, openSync, readFileSync, readSync, statSync, watchFile, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Command, Option } from "commander";
 import {
   type ActionResult,
+  type ArtifactInfo,
   type BrowserListResult,
+  DEFAULT_REMOTE_PORT,
+  type DownloadInfo,
+  type DownloadResult,
+  type DownloadsResult,
+  type RecordStartResult,
+  type RecordStopResult,
+  type RemoteStatusResult,
+  type TablesResult,
+  type UploadResult,
   type ConsoleResult,
   DEFAULT_WS_PORT,
   type DialogStatusResult,
@@ -29,6 +38,9 @@ import {
   type WaitForNavigationResult,
 } from "@browser-control/protocol";
 import { daemonReachable, once, rpc, startDaemonDetached } from "./client";
+import { describeTable, fetchArtifact, readWireFiles, renderTable, type TableFormat } from "./files";
+import { runMcpServer, mcpConfigSnippet } from "./mcp";
+import { forgetRemoteClient, formatPairing, newClient, parsePairing, readServerConfig, remoteTarget, saveRemoteClient, writeServerConfig } from "./remote";
 import { Daemon, pidAlive, readDaemonInfo } from "./daemon/daemon";
 import { runDoctor } from "./doctor";
 import { logPath } from "./paths";
@@ -146,7 +158,7 @@ daemon
       return;
     }
     await run(async () => {
-      if (await daemonReachable()) {
+      if (await daemonReachable({ local: true })) {
         const info = readDaemonInfo();
         out(info, () => `daemon already running (pid ${info?.pid}, ws port ${info?.ws_port})`);
         return;
@@ -162,7 +174,7 @@ daemon
   .action(async () => {
     const info = readDaemonInfo();
     try {
-      await once("system.shutdown", undefined, 5000);
+      await once("system.shutdown", undefined, 5000, { local: true });
     } catch {
       if (info && pidAlive(info.pid)) process.kill(info.pid, "SIGTERM");
       else {
@@ -180,13 +192,15 @@ daemon
 
 async function statusCmd(): Promise<void> {
   await run(async () => {
-    if (!(await daemonReachable())) {
+    const remote = remoteTarget();
+    // Remote: report the real failure (auth, refused, timeout) instead of a generic "not running".
+    if (!remote && !(await daemonReachable())) {
       out({ running: false }, () => "daemon: not running (any command auto-starts it)");
       return;
     }
-    const s = await once<StatusResult>("system.status", undefined, 3000);
+    const s = await once<StatusResult>("system.status", undefined, 5000);
     out(s, () => {
-      const lines = [`daemon ${s.daemon_version} pid ${s.pid} uptime ${s.uptime_secs}s · ws 127.0.0.1:${s.ws_port} · ${s.sock_path}`];
+      const lines = [`${remote ? `remote daemon at ${remote.host}:${remote.port} — ` : ""}daemon ${s.daemon_version} pid ${s.pid} uptime ${s.uptime_secs}s · ws 127.0.0.1:${s.ws_port} · ${s.sock_path}`];
       lines.push(`browsers (${s.browsers.length}):`);
       for (const b of s.browsers) lines.push(`  ${b.instance_id}  ${(b.process?.browser ?? b.browser.name).padEnd(9)} ${b.label ? `"${b.label}"` : ""}  chromium ${b.browser.version}  ext ${b.extension_version}  sessions ${b.sessions}`);
       lines.push(`sessions (${s.sessions.length}):`);
@@ -235,13 +249,23 @@ program
       process.stderr.write(`no log at ${p}\n`);
       return;
     }
-    if (o.follow) {
-      const t = spawn("tail", ["-n", String(o.lines), "-f", p], { stdio: "inherit" });
-      t.on("exit", (c) => process.exit(c ?? 0));
-      return;
-    }
     const lines = readFileSync(p, "utf8").trimEnd().split("\n");
     process.stdout.write(`${lines.slice(-o.lines).join("\n")}\n`);
+    if (o.follow) {
+      // Portable `tail -f` (Windows has no tail).
+      let pos = statSync(p).size;
+      watchFile(p, { interval: 300 }, () => {
+        const size = statSync(p).size;
+        if (size < pos) pos = 0;
+        if (size === pos) return;
+        const fd = openSync(p, "r");
+        const buf = Buffer.alloc(size - pos);
+        readSync(fd, buf, 0, buf.length, pos);
+        closeSync(fd);
+        pos = size;
+        process.stdout.write(buf);
+      });
+    }
   });
 
 // --------------------------------------------------------------------------- sessions
@@ -637,6 +661,289 @@ program
       const r = await tool<{ cookies: Array<{ name: string; domain: string; secure: boolean; http_only: boolean }> }>("tool.cookies", { domain: o.domain });
       out(r, () => r.cookies.map((c) => `${c.name.padEnd(32)} ${c.domain}${c.secure ? " secure" : ""}${c.http_only ? " httponly" : ""}`).join("\n") || "no cookies");
     });
+  });
+
+// --------------------------------------------------------------------------- files
+
+program
+  .command("upload <target> <files...>")
+  .description("put local files into a file input (<input type=file>), or into the file picker a button opens")
+  .action(async (target: string, files: string[]) => {
+    await run(async () => {
+      const r = await tool<UploadResult>("tool.upload", { target, files: readWireFiles(files) });
+      out(r, () => `uploaded ${r.files.join(", ")} to ${target} via ${r.via === "input" ? "the file input" : "the file chooser"}`);
+    });
+  });
+
+function fmtDownload(d: DownloadInfo): string {
+  const size = d.total_bytes > 0 ? `${Math.round(d.total_bytes / 1024)} KiB` : `${Math.round(d.bytes_received / 1024)} KiB`;
+  return `#${d.download_id}  ${d.state.padEnd(11)} ${size.padStart(9)}  ${d.basename || "(pending name)"}${d.error ? `  error=${d.error}` : ""}\n      ${d.url.slice(0, 120)}`;
+}
+async function saveDownload(d: DownloadInfo, outPath: string): Promise<string> {
+  const a = await rpc<ArtifactInfo>("download.fetch", { session_id: await sessionId(), download_id: d.download_id });
+  return fetchArtifact(a, outPath);
+}
+
+program
+  .command("download <url-or-target>")
+  .description("download a URL or a link (@ref/selector) with the browser's cookies and wait for it")
+  .option("-o, --out <path>", "also copy the file here (file or directory; works for remote daemons)")
+  .option("--filename <name>", "name inside the browser's download folder")
+  .option("--timeout <ms>", "wait at most this long", (v) => Number(v), 120000)
+  .option("--no-wait", "return as soon as the download starts")
+  .action(async (what: string, o: { out?: string; filename?: string; timeout: number; wait: boolean }) => {
+    await run(async () => {
+      const isUrl = /^[a-z][a-z0-9+.-]*:/i.test(what) || what.startsWith("/") || what.startsWith("./") || what.startsWith("../");
+      const r = await tool<DownloadResult>("tool.download", { ...(isUrl ? { url: what } : { target: what }), filename: o.filename });
+      let d = r.download;
+      if (o.wait) {
+        const w = await rpc<DownloadsResult>("tool.downloads", { session_id: await sessionId(), download_id: d.download_id, wait: true, timeout_ms: o.timeout }, { timeoutMs: o.timeout + 15_000 });
+        d = w.waited ?? d;
+        if (w.timed_out) process.exitCode = 1;
+      }
+      const saved = o.out && d.state === "complete" ? await saveDownload(d, o.out) : undefined;
+      out({ ...d, ...(saved ? { saved_to: saved } : {}) }, () => `${fmtDownload(d)}${d.filename ? `\n      → ${d.filename}` : ""}${saved ? `\n      copied to ${saved}` : ""}`);
+      if (d.state === "interrupted") process.exitCode = 1;
+    });
+  });
+
+const downloads = program.command("downloads").description("downloads started by this session (clicks on download links, `bctl download`)");
+downloads
+  .command("list", { isDefault: true })
+  .description("list this session's downloads")
+  .action(async () => {
+    await run(async () => {
+      const r = await rpc<DownloadsResult>("tool.downloads", { session_id: await sessionId() });
+      out(r, () => (r.downloads.length ? r.downloads.map(fmtDownload).join("\n") : "no downloads in this session"));
+    });
+  });
+downloads
+  .command("wait")
+  .description("wait for a download to finish: the given id, or the newest one (waiting for a click to start one)")
+  .option("--id <n>", "download id", (v) => Number(v))
+  .option("--since <ms>", "only downloads started within the last N ms (default 30000)", (v) => Number(v), 30000)
+  .option("--timeout <ms>", "", (v) => Number(v), 60000)
+  .option("-o, --out <path>", "copy the finished file here (file or directory)")
+  .action(async (o: { id?: number; since: number; timeout: number; out?: string }) => {
+    await run(async () => {
+      const r = await rpc<DownloadsResult>("tool.downloads", { session_id: await sessionId(), download_id: o.id, wait: true, since_ms: Date.now() - o.since, timeout_ms: o.timeout }, { timeoutMs: o.timeout + 15_000 });
+      const d = r.waited;
+      const saved = o.out && d?.state === "complete" ? await saveDownload(d, o.out) : undefined;
+      out({ ...r, ...(saved ? { saved_to: saved } : {}) }, () => {
+        if (!d) return "timeout: no download started";
+        return `${r.timed_out ? "timeout: still " : ""}${fmtDownload(d)}${d.filename ? `\n      → ${d.filename}` : ""}${saved ? `\n      copied to ${saved}` : ""}`;
+      });
+      if (r.timed_out || !d || d.state !== "complete") process.exitCode = 1;
+    });
+  });
+downloads
+  .command("get <id>")
+  .description("copy a finished download to a local path (works for remote daemons)")
+  .requiredOption("-o, --out <path>", "file or directory")
+  .action(async (id: string, o: { out: string }) => {
+    await run(async () => {
+      const a = await rpc<ArtifactInfo>("download.fetch", { session_id: await sessionId(), download_id: Number(id) });
+      const file = await fetchArtifact(a, o.out);
+      out({ ...a, saved_to: file }, () => `saved ${file} (${a.size} bytes)`);
+    });
+  });
+
+// --------------------------------------------------------------------------- tables
+
+program
+  .command("tables [target]")
+  .alias("table")
+  .description("extract tables (<table>, ARIA grid/table) as rows and columns")
+  .option("--index <n>", "only this table", (v) => Number(v))
+  .addOption(new Option("--format <fmt>", "md | csv | tsv | json").choices(["md", "csv", "tsv", "json"]).default("md"))
+  .option("--max-rows <n>", "rows per table", (v) => Number(v), 500)
+  .option("-o, --out <file>", "write the rendered table(s) to a file")
+  .action(async (target: string | undefined, o: { index?: number; format: TableFormat; maxRows: number; out?: string }) => {
+    await run(async () => {
+      const r = await tool<TablesResult>("tool.tables", { target, max_rows: o.maxRows });
+      const tables = o.index !== undefined ? r.tables.filter((t) => t.index === o.index) : r.tables;
+      if (o.index !== undefined && tables.length === 0) throw new RpcFailure({ code: "not_found", message: `no table ${o.index}; found ${r.tables.length}`, data: { reason: "table_not_found" } });
+      const rendered = tables.map((t) => (tables.length > 1 || o.format === "md" ? `## ${describeTable(t)}\n\n` : "") + renderTable(t, o.format)).join("\n\n");
+      if (o.out) {
+        writeFileSync(resolve(o.out), `${rendered}\n`);
+        out({ ...r, tables, file: resolve(o.out) }, () => `wrote ${tables.length} table(s) to ${resolve(o.out!)}`);
+        return;
+      }
+      out({ ...r, tables }, () => (tables.length ? rendered : "no tables found"));
+    });
+  });
+
+// --------------------------------------------------------------------------- recording
+
+const record = program.command("record").description("record the session's tab as a video");
+record
+  .command("start")
+  .description("start recording the active tab (stop with `bctl record stop --out video.mp4`)")
+  .addOption(new Option("--format <fmt>", "mp4 | webm (need ffmpeg) | avi (built in)").choices(["mp4", "webm", "avi"]).default("mp4"))
+  .option("--max-secs <n>", "stop automatically after N seconds", (v) => Number(v), 300)
+  .option("--quality <n>", "JPEG quality of captured frames", (v) => Number(v), 70)
+  .option("--max-width <px>", "", (v) => Number(v), 1280)
+  .option("--max-height <px>", "", (v) => Number(v), 800)
+  .action(async (o: { format: string; maxSecs: number; quality: number; maxWidth: number; maxHeight: number }) => {
+    await run(async () => {
+      const r = await tool<RecordStartResult>("record.start", { format: o.format, max_secs: o.maxSecs, quality: o.quality, max_width: o.maxWidth, max_height: o.maxHeight });
+      out(r, () => `recording ${r.recording_id} on tab ${r.tab_id} (stops by itself after ${r.max_secs}s)`);
+    });
+  });
+record
+  .command("stop")
+  .description("stop recording and save the video")
+  .option("-o, --out <path>", "where to save the video (file or directory; default: current directory)")
+  .addOption(new Option("--format <fmt>", "override the format chosen at start").choices(["mp4", "webm", "avi"]))
+  .action(async (o: { out?: string; format?: string }) => {
+    await run(async () => {
+      const r = await rpc<RecordStopResult>("record.stop", { session_id: await sessionId(), ...(o.format ? { format: o.format } : {}) }, { timeoutMs: 600_000 });
+      const file = await fetchArtifact(r.artifact, o.out ?? ".");
+      out({ ...r, saved_to: file }, () => `saved ${file} (${(r.duration_ms / 1000).toFixed(1)}s, ${r.frames} frames, ${r.encoder}${r.reason !== "stopped" ? `, ended: ${r.reason}` : ""})`);
+    });
+  });
+
+// --------------------------------------------------------------------------- remote
+
+const remote = program.command("remote").description("let a bctl on another machine use this machine's browsers (or point this bctl at one)");
+function remoteSummary(st: RemoteStatusResult & { error?: string }): string {
+  const lines = [`remote access: ${st.enabled ? `enabled${st.listening ? `, listening on ${st.listening}` : ", not listening (daemon not running?)"}` : "disabled"}${st.error ? ` — ${st.error}` : ""}`];
+  lines.push(`paired clients (${st.clients.length}):`);
+  for (const c of st.clients) lines.push(`  ${c.name.padEnd(20)} ${c.client_id}  paired ${c.created_at.slice(0, 10)}${c.last_used_at ? `  last used ${c.last_used_at.replace("T", " ").slice(0, 16)}` : ""}`);
+  const client = remoteTarget();
+  if (client) lines.push(`this machine's bctl uses the remote daemon at ${client.host}:${client.port}`);
+  return lines.join("\n");
+}
+async function reloadRemote(): Promise<(RemoteStatusResult & { error?: string }) | null> {
+  if (!(await daemonReachable({ local: true }))) return null;
+  return once<RemoteStatusResult & { error?: string }>("remote.reload", undefined, 5000, { local: true });
+}
+function localRemoteStatus(): RemoteStatusResult {
+  const c = readServerConfig();
+  return { enabled: c.enabled, clients: c.clients.map((x) => ({ client_id: x.client_id, name: x.name, created_at: x.created_at, ...(x.last_used_at ? { last_used_at: x.last_used_at } : {}) })) };
+}
+remote
+  .command("enable")
+  .description("accept remote bctl clients on this machine (the browser's machine)")
+  .option("--host <addr>", "address to listen on; keep 127.0.0.1 and use an SSH tunnel, or use a private address such as a Tailscale IP", "127.0.0.1")
+  .option("--port <n>", "TCP port", (v) => Number(v), DEFAULT_REMOTE_PORT)
+  .action(async (o: { host: string; port: number }) => {
+    await run(async () => {
+      const c = readServerConfig();
+      writeServerConfig({ ...c, enabled: true, host: o.host, port: o.port });
+      if (!(await daemonReachable({ local: true }))) await startDaemonDetached();
+      const st = (await reloadRemote()) ?? localRemoteStatus();
+      if (!/^(127\.|::1$|localhost$)/.test(o.host)) note(`warning: listening on ${o.host}. Anyone who can reach this port still needs a pairing secret, but prefer a private network (Tailscale, VPN) or an SSH tunnel.`);
+      out(st, () => `${remoteSummary(st)}\nnext: \`bctl remote pair --name <machine>\` and run the printed command on the other machine`);
+    });
+  });
+remote
+  .command("disable")
+  .description("stop accepting remote clients (pairings are kept)")
+  .action(async () => {
+    await run(async () => {
+      writeServerConfig({ ...readServerConfig(), enabled: false });
+      const st = (await reloadRemote()) ?? localRemoteStatus();
+      out(st, () => remoteSummary(st));
+    });
+  });
+remote
+  .command("pair")
+  .description("create a pairing for another machine and print the command to run there")
+  .requiredOption("--name <name>", "a name for the other machine, e.g. devbox")
+  .option("--connect-host <host>", "host the other machine should dial (default: the listen address)")
+  .action(async (o: { name: string; connectHost?: string }) => {
+    await run(async () => {
+      const c = readServerConfig();
+      if (c.clients.some((x) => x.name === o.name)) throw new RpcFailure({ code: "invalid_params", message: `a pairing named "${o.name}" exists; revoke it first or choose another name`, data: { reason: "name_taken" } });
+      const client = newClient(o.name);
+      c.clients.push(client);
+      if (!c.enabled) {
+        c.enabled = true;
+        note(`remote access was disabled; enabling it on ${c.host}:${c.port}`);
+      }
+      writeServerConfig(c);
+      if (!(await daemonReachable({ local: true }))) await startDaemonDetached();
+      await reloadRemote();
+      const host = o.connectHost ?? (c.host === "0.0.0.0" || c.host === "::" ? "<this machine's address>" : c.host);
+      const pairing = formatPairing({ clientId: client.client_id, secret: Buffer.from(client.secret, "base64url"), host, port: c.port });
+      out({ name: o.name, client_id: client.client_id, pairing }, () =>
+        [
+          `paired "${o.name}". On that machine run (this secret is shown only once):`,
+          "",
+          `  bctl remote use '${pairing}'`,
+          "",
+          ...(/^(127\.|::1$|localhost$)/.test(host) ? [`Port ${c.port} only listens on loopback here. Open a tunnel from this machine first, e.g.:`, `  ssh -N -R ${c.port}:127.0.0.1:${c.port} <user>@<other machine>`, ""] : []),
+          `Revoke later with: bctl remote revoke ${o.name}`,
+        ].join("\n"),
+      );
+    });
+  });
+remote
+  .command("revoke <name-or-id>")
+  .description("remove a pairing; that machine can no longer connect")
+  .action(async (who: string) => {
+    await run(async () => {
+      const c = readServerConfig();
+      const before = c.clients.length;
+      c.clients = c.clients.filter((x) => x.name !== who && x.client_id !== who);
+      if (c.clients.length === before) throw new RpcFailure({ code: "not_found", message: `no pairing named ${who}`, data: { reason: "pairing_not_found" } });
+      writeServerConfig(c);
+      const st = (await reloadRemote()) ?? localRemoteStatus();
+      out(st, () => `revoked ${who}\n${remoteSummary(st)}`);
+    });
+  });
+remote
+  .command("status")
+  .alias("list")
+  .description("show remote access settings and pairings")
+  .action(async () => {
+    await run(async () => {
+      const st = (await daemonReachable({ local: true })) ? await once<RemoteStatusResult & { error?: string }>("remote.status", undefined, 5000, { local: true }) : localRemoteStatus();
+      out(st, () => remoteSummary(st));
+    });
+  });
+remote
+  .command("use <pairing>")
+  .description("on the other machine: send every bctl command to the paired daemon")
+  .action(async (pairing: string) => {
+    await run(async () => {
+      const p = parsePairing(pairing);
+      saveRemoteClient(pairing);
+      let ok = false;
+      try {
+        await once("system.ping", undefined, 5000);
+        ok = true;
+      } catch (e) {
+        note(`saved, but the daemon at ${p.host}:${p.port} did not answer yet: ${(e as Error).message}`);
+      }
+      out({ host: p.host, port: p.port, reachable: ok }, () => `bctl now uses the daemon at ${p.host}:${p.port}${ok ? " (reachable)" : ""}. Undo with \`bctl remote forget\`; BCTL_REMOTE=off skips it for one command.`);
+    });
+  });
+remote
+  .command("forget")
+  .description("on the other machine: go back to the local daemon")
+  .action(() => {
+    const removed = forgetRemoteClient();
+    out({ removed }, () => (removed ? "bctl uses the local daemon again" : "no remote daemon was configured"));
+  });
+
+// --------------------------------------------------------------------------- MCP
+
+program
+  .command("mcp")
+  .description("run as an MCP server over stdio (for Claude Desktop, Claude Code, Codex, Cursor, …)")
+  .option("-b, --browser <selector>", "browser for the session the server starts (id, label, or name)")
+  .option("--name <controller>", "agent name shown in the tab overlay", "MCP agent")
+  .option("--focus", "bring the Agent Window to the front")
+  .option("--keep-session", "leave the session open when the client disconnects")
+  .addOption(new Option("--print-config <client>", "print a config snippet instead of serving").choices(["claude-desktop", "claude-code", "codex", "cursor", "json"]))
+  .action(async (o: { browser?: string; name: string; focus?: boolean; keepSession?: boolean; printConfig?: string }) => {
+    if (o.printConfig) {
+      process.stdout.write(`${mcpConfigSnippet(o.printConfig)}\n`);
+      return;
+    }
+    await runMcpServer({ browser: o.browser, controller: o.name, focus: !!o.focus, keepSession: !!o.keepSession });
   });
 
 // --------------------------------------------------------------------------- skill

@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm typecheck
+      - run: pnpm test
+      # Branded Chrome ignores --load-extension, so the e2e suite runs Playwright's Chromium build.
+      - name: Install Chromium for e2e
+        run: npx -y playwright@1.55.0 install ${{ runner.os == 'Linux' && '--with-deps' || '' }} chromium
+      - name: End-to-end (real browser, daemon, named pipe / socket, process identity)
+        run: pnpm e2e

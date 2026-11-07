@@ -4,6 +4,8 @@ Three parts, one wire protocol:
 
 ```
 agent shell ──► bctl CLI ──JSON lines / UDS──► bctl daemon ──WebSocket 127.0.0.1:52810──► extension (MV3)
+MCP client ──► bctl mcp ─┘                         ▲
+remote bctl ──TCP 52811, AES-GCM (paired)──────────┘
                                                    │                                        │
                                                    │ identifies the peer process (lsof)      ├─ chrome.scripting  → reads (snapshot, text, html)
                                                    │ per-session queue, tombstones           ├─ chrome.debugger   → trusted input, screenshots, console, network, dialogs
@@ -15,7 +17,8 @@ agent shell ──► bctl CLI ──JSON lines / UDS──► bctl daemon ─�
 - `bctl <verb> [target] --session <id>`; human output by default, `--json` for agents.
 - Talks to the daemon over `$BCTL_HOME/run/daemon.sock` (Unix) or a per-user named pipe
   (Windows) with one newline-terminated JSON request per connection. Socket paths longer than
-  the OS limit fall back to `$TMPDIR/bctl-<uid>/<hash>.sock`.
+  the OS limit fall back to `$TMPDIR/bctl-<uid>/<hash>.sock`. With a pairing configured
+  (`bctl remote use`, `BCTL_REMOTE`) requests go to the remote daemon instead.
 - Auto-starts the daemon (`bctl daemon start --foreground` in a detached child) unless
   `BCTL_AUTO_START=0`.
 - `install-skill` copies `skill/` into harness skill directories with a SHA-256 manifest so
@@ -36,7 +39,22 @@ agent shell ──► bctl CLI ──JSON lines / UDS──► bctl daemon ─�
   with `user_aborted`; reads continue; `session resume` clears it.
 - Liveness: the extension sends `system.heartbeat` every 20 s; silent peers are pinged and
   reaped after 75 s. Idle sessions stop after `BCTL_SESSION_IDLE_SECS` (default 1800).
-- State files in `~/.bctl`: `daemon.json`, `daemon.lock`, `daemon.log`, `run/daemon.sock`.
+- Recordings: `record.frame` events are written to `~/.bctl/recordings/<id>.frames/` and
+  encoded on stop with ffmpeg (mp4/webm) or the built-in Motion-JPEG AVI writer. Encoded files
+  are kept 7 days.
+- Artifacts: recordings and fetched downloads get an id; any CLI (local or remote) copies them
+  with chunked `artifact.read`, so `--out` paths are always on the caller's machine.
+- Remote access (`remote.ts`): optional TCP listener with a per-client pairing secret, see
+  [protocol](protocol.md#remote-link-cli-on-another-machine--daemon).
+- State files in `~/.bctl`: `daemon.json`, `daemon.lock`, `daemon.log`, `run/daemon.sock`,
+  `recordings/`, `remote.json` (daemon side, 0600), `remote-client.json` (CLI side, 0600).
+
+## bctl mcp
+
+`bctl mcp` is an MCP server over stdio for clients that cannot run shell commands. Each tool
+(`browser_open`, `browser_snapshot`, `browser_click`, `browser_tables`, `browser_upload`,
+`browser_record`, …) calls the same daemon methods as the CLI. The server starts its own
+session on the first browser tool and stops it when the client disconnects.
 
 ## Extension (`packages/extension`)
 
@@ -47,8 +65,10 @@ Plain MV3, bundled with esbuild, no framework.
 | `transport.ts` | WebSocket byte pipe with capped backoff reconnect |
 | `background.ts` | handshake, heartbeat, dispatch, browser events → daemon events, popup messaging |
 | `sessions.ts` | Agent Window creation, borrow/return bookkeeping, tab resolution |
-| `page-agent.ts` | self-contained function injected with `chrome.scripting` (isolated world): snapshot with stable `@eN` refs, resolve, find, text/html, scroll, DOM fallbacks |
-| `cdp.ts` | lazy `chrome.debugger` attach, typed send, console/network/dialog buffers, `sendOrDialog` |
+| `page-agent.ts` | self-contained function injected with `chrome.scripting` (isolated world): snapshot with stable `@eN` refs, resolve, find, text/html, scroll, tables, file inputs, DOM fallbacks |
+| `cdp.ts` | lazy `chrome.debugger` attach, typed send, console/network/dialog buffers, `sendOrDialog`, event subscriptions |
+| `downloads.ts` | attributes `chrome.downloads` items to sessions, waits for completion |
+| `recorder.ts` | `Page.startScreencast` per session, frame acks, `record.frame` events |
 | `tools.ts` | `tool.*` handlers |
 | `keys.ts` | key combo → CDP key events |
 | `content.ts` | control overlay with Stop button in controlled tabs |

@@ -29,6 +29,7 @@ export class Cdp {
   private attaching = new Map<number, Promise<void>>();
   private captures = new Map<number, TabCapture>();
   private dialogListeners = new Set<(tabId: number, dialog: DialogInfo | undefined) => void>();
+  private eventListeners = new Set<(tabId: number, method: string, params: Record<string, unknown> | undefined) => void>();
 
   constructor() {
     chrome.debugger.onEvent.addListener((source, method, params) => {
@@ -49,6 +50,37 @@ export class Cdp {
   onDialog(l: (tabId: number, dialog: DialogInfo | undefined) => void): () => void {
     this.dialogListeners.add(l);
     return () => this.dialogListeners.delete(l);
+  }
+
+  /** Subscribe to every CDP event from attached tabs. Returns an unsubscribe function. */
+  onEvent(l: (tabId: number, method: string, params: Record<string, unknown> | undefined) => void): () => void {
+    this.eventListeners.add(l);
+    return () => this.eventListeners.delete(l);
+  }
+
+  /** Resolve with the first event `method` on `tabId` matching `pred`, or null after `timeoutMs`. */
+  waitForEvent(tabId: number, method: string, timeoutMs: number, pred: (p: Record<string, unknown> | undefined) => boolean = () => true): { promise: Promise<Record<string, unknown> | null>; cancel: () => void } {
+    let off: () => void = () => {};
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const promise = new Promise<Record<string, unknown> | null>((resolve) => {
+      off = this.onEvent((id, m, p) => {
+        if (id !== tabId || m !== method || !pred(p)) return;
+        off();
+        if (timer) clearTimeout(timer);
+        resolve(p ?? {});
+      });
+      timer = setTimeout(() => {
+        off();
+        resolve(null);
+      }, timeoutMs);
+    });
+    return {
+      promise,
+      cancel: () => {
+        off();
+        if (timer) clearTimeout(timer);
+      },
+    };
   }
 
   capture(tabId: number): TabCapture {
@@ -153,6 +185,11 @@ export class Cdp {
     });
   }
 
+  /** Send on an already-attached tab without trying to attach (used for acks from event handlers). */
+  sendAttached<T = unknown>(tabId: number, method: string, params?: object): Promise<T> {
+    return this.sendRaw<T>(tabId, method, params);
+  }
+
   private async sendRaw<T = unknown>(tabId: number, method: string, params?: object): Promise<T> {
     try {
       return (await chrome.debugger.sendCommand({ tabId }, method, params)) as T;
@@ -164,6 +201,13 @@ export class Cdp {
   }
 
   private handleEvent(tabId: number, method: string, params?: Record<string, unknown>): void {
+    for (const l of this.eventListeners) {
+      try {
+        l(tabId, method, params);
+      } catch {
+        /* listener errors never break capture */
+      }
+    }
     const c = this.capture(tabId);
     const now = Date.now();
     switch (method) {

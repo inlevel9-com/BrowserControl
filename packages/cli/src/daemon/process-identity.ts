@@ -49,11 +49,26 @@ async function describePid(pid: number, cmd: string): Promise<ProcessIdentity> {
   return { pid, name, path: path || undefined, ...(browser ? { browser } : {}) };
 }
 
+/** PowerShell one-liner that prints `pid|name|path` for the process owning a loopback client port. */
+export function powershellPeerScript(remotePort: number): string {
+  const port = Math.trunc(remotePort);
+  return `$c = Get-NetTCPConnection -LocalPort ${port} -State Established -ErrorAction SilentlyContinue | Where-Object { $_.RemoteAddress -in @('127.0.0.1','::1') } | Select-Object -First 1; if ($c) { $p = Get-Process -Id $c.OwningProcess; Write-Output ("{0}|{1}|{2}" -f $p.Id, $p.ProcessName, $p.Path) }`;
+}
+
+/** Parse `pid|name|path` (Windows paths, possibly empty) into a process identity. */
+export function parsePowershellPeer(stdout: string): ProcessIdentity | undefined {
+  const line = stdout.split(/\r?\n/).map((l) => l.trim()).find((l) => /^\d+\|/.test(l));
+  if (!line) return undefined;
+  const [pidS, name = "", ...rest] = line.split("|");
+  const path = rest.join("|");
+  const pid = Number(pidS);
+  if (!Number.isFinite(pid) || pid <= 0) return undefined;
+  const exe = path ? path.split(/[\\/]/).pop()?.replace(/\.exe$/i, "") : undefined;
+  const browser = browserFromProcessName(name) ?? (exe ? browserFromProcessName(exe) : undefined) ?? browserFromProcessName(path);
+  return { pid, name, ...(path ? { path } : {}), ...(browser ? { browser } : {}) };
+}
+
 async function viaPowershell(remotePort: number): Promise<ProcessIdentity | undefined> {
-  const script = `$c = Get-NetTCPConnection -LocalPort ${remotePort} -State Established -ErrorAction SilentlyContinue | Select-Object -First 1; if ($c) { $p = Get-Process -Id $c.OwningProcess; Write-Output ("{0}|{1}|{2}" -f $p.Id, $p.ProcessName, $p.Path) }`;
-  const { stdout } = await run("powershell", ["-NoProfile", "-Command", script], { timeout: 6000 });
-  const [pidS, name, path] = stdout.trim().split("|");
-  if (!pidS) return undefined;
-  const browser = browserFromProcessName(name ?? "") ?? browserFromProcessName(path ?? "");
-  return { pid: Number(pidS), name: name ?? "", path: path || undefined, ...(browser ? { browser } : {}) };
+  const { stdout } = await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", powershellPeerScript(remotePort)], { timeout: 8000, windowsHide: true });
+  return parsePowershellPeer(stdout);
 }

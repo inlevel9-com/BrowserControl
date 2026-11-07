@@ -8,6 +8,10 @@ import {
   type ConsoleResult,
   type CookiesParams,
   type CookiesResult,
+  type DownloadParams,
+  type DownloadResult,
+  type DownloadsParams,
+  type DownloadsResult,
   type DialogHandleParams,
   type DialogHandleResult,
   type DialogStatusResult,
@@ -45,7 +49,12 @@ import {
   type TabInfo,
   type TabListParams,
   type TabListResult,
+  type TablesParams,
+  type TablesResult,
   type TabScoped,
+  type ToolRecordStartParams,
+  type UploadParams,
+  type UploadResult,
   type ToolSessionStartParams,
   type ToolSessionStartResult,
   type ToolSessionStopResult,
@@ -57,6 +66,8 @@ import {
   type WindowResizeParams,
 } from "@browser-control/protocol";
 import { Cdp, CdpError } from "./cdp";
+import type { DownloadTracker } from "./downloads";
+import type { Recorder } from "./recorder";
 import { parseKeyCombo } from "./keys";
 import { pageAgent, type PageOp } from "./page-agent";
 import { isRestrictedUrl, type Session, SessionManager, TabError } from "./sessions";
@@ -75,11 +86,28 @@ export type ToolHandler = (params: unknown) => Promise<unknown>;
 export interface ToolDeps {
   sessions: SessionManager;
   cdp: Cdp;
+  downloads: DownloadTracker;
+  recorder: Recorder;
   notifyControlled: (tabId: number, sessionId: string | null) => void;
 }
 
+// Runs in the page's main world via Runtime.callFunctionOn with `this` = the <input type=file>.
+const SET_FILES_FN = `function (files) {
+  const dt = new DataTransfer();
+  for (const f of files) {
+    const bin = atob(f.data);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    dt.items.add(new File([bytes], f.name, { type: f.mime || "application/octet-stream", lastModified: Date.now() }));
+  }
+  this.files = dt.files;
+  this.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+  this.dispatchEvent(new Event("change", { bubbles: true }));
+  return { names: Array.from(this.files || []).map((f) => f.name) };
+}`;
+
 export function buildTools(deps: ToolDeps): Record<string, ToolHandler> {
-  const { sessions, cdp } = deps;
+  const { sessions, cdp, downloads, recorder } = deps;
 
   function session(p: SessionScoped): Session {
     const s = sessions.get(p?.session_id);
@@ -205,6 +233,7 @@ export function buildTools(deps: ToolDeps): Record<string, ToolHandler> {
       const p = raw as SessionScoped;
       const s = sessions.get(p.session_id);
       if (!s) return { returned_tabs: [], closed_tabs: [] } satisfies ToolSessionStopResult;
+      await recorder.stop(s.id).catch(() => undefined);
       const tabs = await sessions.controlledTabs(s);
       for (const t of tabs) if (t.id !== undefined) await cdp.detach(t.id);
       for (const id of s.borrowed.keys()) {
@@ -275,6 +304,7 @@ export function buildTools(deps: ToolDeps): Record<string, ToolHandler> {
       const p = raw as TabIdParams;
       const s = session(p);
       try {
+        recorder.end(p.tab_id, "tab_returned");
         await cdp.detach(p.tab_id);
         const w = await sessions.returnTab(s, p.tab_id);
         deps.notifyControlled(p.tab_id, null);
@@ -667,6 +697,132 @@ export function buildTools(deps: ToolDeps): Record<string, ToolHandler> {
         if (cdpUnavailable(e)) fail("unsupported", "pdf export requires the debugger (CDP)", "cdp_unavailable");
         throw e;
       }
+    },
+
+    // ----------------------------------------------------------------------- files
+    async "tool.upload"(raw) {
+      const p = raw as UploadParams;
+      const { tab: t, tabId } = await tab(p);
+      if (!Array.isArray(p.files) || p.files.length === 0) fail("invalid_params", "upload needs at least one file", "no_files");
+      for (const f of p.files) if (!f || typeof f.name !== "string" || typeof f.data !== "string") fail("invalid_params", "each file needs a name and base64 data", "bad_file");
+      const fi = await page(t, "file_input", { target: p.target });
+      if (!fi.found) fail("not_found", `target ${p.target} not found in tab ${tabId}`, /^@?e\d+$/.test(p.target.trim()) ? "ref_not_found" : "selector_not_found", "run `bctl snapshot`; file inputs show as `filebutton`, or target the button that opens the file picker");
+      if (fi.kind === "input") {
+        if (fi.disabled) fail("unsupported", `${fi.description} is disabled`, "target_disabled");
+        const r = await page(t, "set_files", { target: `@${fi.ref}`, files: p.files });
+        if (!r.ok) {
+          if (r.reason === "not_multiple") fail("invalid_params", `${fi.description} accepts one file; got ${p.files.length}`, "input_not_multiple");
+          fail("unsupported", `could not set files on ${fi.description}`, "set_files_failed");
+        }
+        return { tab_id: tabId, target: p.target, via: "input", files: r.names, multiple: !!r.multiple } satisfies UploadResult;
+      }
+      // Not a file input: click it and answer the file chooser it opens.
+      const r = await resolveTarget(t, p.target);
+      if (r.disabled) fail("unsupported", `${r.description} is disabled`, "target_disabled");
+      try {
+        await cdp.send(tabId, "Page.setInterceptFileChooserDialog", { enabled: true });
+      } catch (e) {
+        if (cdpUnavailable(e)) fail("unsupported", `${r.description} is not a file input, and answering a file chooser needs the debugger`, "cdp_unavailable", "target the <input type=file> itself (find it with `bctl find file` or a CSS selector such as input[type=file])");
+        throw e;
+      }
+      const waiter = cdp.waitForEvent(tabId, "Page.fileChooserOpened", 5_000);
+      try {
+        const dialogOpened = await cdpMouse(tabId, r.x, r.y, {});
+        if (dialogOpened) fail("dialog_pending", "a JavaScript dialog opened instead of a file chooser", "dialog_pending", "decide it with `bctl dialog accept|dismiss`");
+        const ev = await waiter.promise;
+        if (!ev) fail("not_found", `clicking ${r.description} did not open a file chooser`, "no_file_chooser", "target the <input type=file> or the control that opens the file picker");
+        const mode = String(ev.mode ?? "selectSingle");
+        if (p.files.length > 1 && mode !== "selectMultiple") fail("invalid_params", `the file chooser accepts one file; got ${p.files.length}`, "input_not_multiple");
+        const backendNodeId = Number(ev.backendNodeId);
+        if (!backendNodeId) fail("unsupported", "the file chooser did not report its input element", "no_chooser_input");
+        const node = await cdp.send<{ object: { objectId?: string } }>(tabId, "DOM.resolveNode", { backendNodeId });
+        if (!node.object.objectId) fail("internal", "could not resolve the file input", "resolve_failed");
+        const res = await cdp.send<{ result: { value?: { names?: string[] } }; exceptionDetails?: { text?: string } }>(tabId, "Runtime.callFunctionOn", {
+          objectId: node.object.objectId,
+          functionDeclaration: SET_FILES_FN,
+          arguments: [{ value: p.files }],
+          returnByValue: true,
+        });
+        if (res.exceptionDetails) fail("internal", `setting files failed: ${res.exceptionDetails.text ?? "exception"}`, "set_files_failed");
+        return { tab_id: tabId, target: p.target, via: "chooser", files: res.result.value?.names ?? [], multiple: mode === "selectMultiple" } satisfies UploadResult;
+      } finally {
+        waiter.cancel();
+        await cdp.send(tabId, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => undefined);
+      }
+    },
+    async "tool.download"(raw) {
+      const p = raw as DownloadParams;
+      const { s, tab: t, tabId } = await tab(p);
+      if (!chrome.downloads) fail("unsupported", "this extension build has no downloads permission; update the extension to 1.1 or newer", "downloads_unavailable");
+      let url = p.url?.trim();
+      if (!url && p.target) {
+        const r = await page(t, "link_url", { target: p.target });
+        if (!r.found) fail("not_found", `target ${p.target} not found`, "ref_not_found", "run `bctl snapshot` again");
+        if (!r.url) fail("unsupported", `${r.description} is not a link`, "target_not_link", "click it instead, then run `bctl downloads wait`");
+        url = r.url as string;
+      }
+      if (!url) fail("invalid_params", "download needs a url or a link target", "no_url");
+      try {
+        url = new URL(url, t.url && /^https?:/.test(t.url) ? t.url : undefined).href;
+      } catch {
+        fail("invalid_params", `not a valid URL: ${url}`, "bad_url");
+      }
+      if (!/^(https?|data|blob):/i.test(url)) fail("invalid_params", `only http(s), data and blob URLs can be downloaded: ${url}`, "bad_url");
+      let id: number;
+      try {
+        id = await chrome.downloads.download({ url, saveAs: false, conflictAction: "uniquify", ...(p.filename ? { filename: p.filename } : {}) });
+      } catch (e) {
+        fail("permission_denied", `download refused: ${(e as Error).message}`, "download_refused");
+      }
+      downloads.claim(id, s.id);
+      const info = await downloads.info(id);
+      if (!info) fail("internal", `download ${id} vanished`, "download_missing");
+      return { tab_id: tabId, download: info } satisfies DownloadResult;
+    },
+    async "tool.downloads"(raw) {
+      const p = raw as DownloadsParams;
+      const s = session(p);
+      if (!chrome.downloads) fail("unsupported", "this extension build has no downloads permission; update the extension to 1.1 or newer", "downloads_unavailable");
+      if (p.download_id !== undefined && downloads.ownerOf(p.download_id) !== s.id) fail("not_found", `download ${p.download_id} does not belong to session ${s.id}`, "download_not_in_session", "run `bctl downloads` to list this session's downloads");
+      let waited;
+      let timedOut;
+      if (p.wait) {
+        const r = await downloads.wait(s.id, { downloadId: p.download_id, sinceMs: p.since_ms, timeoutMs: Math.min(p.timeout_ms ?? 60_000, 600_000) });
+        waited = r.waited;
+        timedOut = r.timedOut;
+      } else if (p.download_id !== undefined) waited = await downloads.info(p.download_id);
+      const list = await downloads.list(s.id);
+      return { downloads: list, ...(waited ? { waited } : {}), ...(timedOut ? { timed_out: true } : {}) } satisfies DownloadsResult;
+    },
+
+    // ----------------------------------------------------------------------- tables
+    async "tool.tables"(raw) {
+      const p = raw as TablesParams;
+      const { tab: t, tabId } = await tab(p);
+      const r = await page(t, "tables", { target: p.target, max_rows: p.max_rows ?? 500 });
+      if (!r.found) fail("not_found", `target ${p.target} not found`, "selector_not_found");
+      return { tab_id: tabId, url: r.url, tables: r.tables } satisfies TablesResult;
+    },
+
+    // ----------------------------------------------------------------------- recording
+    async "tool.record_start"(raw) {
+      const p = raw as ToolRecordStartParams;
+      const { s, tab: t, tabId } = await tab(p);
+      assertScriptable(t);
+      try {
+        await recorder.start(tabId, s.id, p.recording_id, { quality: p.quality, maxWidth: p.max_width, maxHeight: p.max_height });
+      } catch (e) {
+        if (cdpUnavailable(e)) fail("unsupported", "recording requires the debugger (CDP) and it is unavailable for this tab", "cdp_unavailable");
+        if (e instanceof CdpError) throw e;
+        fail("invalid_params", String((e as Error).message), "already_recording");
+      }
+      return { recording_id: p.recording_id, tab_id: tabId };
+    },
+    async "tool.record_stop"(raw) {
+      const p = raw as SessionScoped;
+      const s = session(p);
+      const r = await recorder.stop(s.id);
+      return r ? { recording_id: r.recordingId, tab_id: r.tabId, frames: r.frames } : { recording_id: null, frames: 0 };
     },
   };
   return tools;

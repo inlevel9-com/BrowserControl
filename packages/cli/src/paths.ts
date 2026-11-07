@@ -11,8 +11,8 @@ export function bctlHome(): string {
 export function runDir(): string {
   return join(bctlHome(), "run");
 }
-export function sockPath(): string {
-  if (process.platform === "win32") {
+export function sockPath(platform: NodeJS.Platform = process.platform): string {
+  if (platform === "win32") {
     let user = "user";
     try {
       user = userInfo().username;
@@ -44,4 +44,15 @@ export function logPath(): string {
 }
 export function skillInstallManifest(dir: string): string {
   return join(dir, ".bctl-source.json");
+}
+export function recordingsDir(): string {
+  return join(bctlHome(), "recordings");
+}
+/** Daemon side: remote listener settings and paired clients (secrets; mode 0600). */
+export function remoteServerConfigPath(): string {
+  return join(bctlHome(), "remote.json");
+}
+/** CLI side: the pairing string this machine uses to reach a remote daemon. */
+export function remoteClientConfigPath(): string {
+  return join(bctlHome(), "remote-client.json");
 }

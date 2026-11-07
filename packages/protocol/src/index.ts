@@ -6,7 +6,8 @@
 //   event    { event, payload? }
 // The transport never interprets frames; routing happens in the daemon and the extension dispatcher.
 
-export const PROTOCOL_VERSION = "1.0";
+export const PROTOCOL_VERSION = "1.1";
+export const DEFAULT_REMOTE_PORT = 52811;
 export const DEFAULT_WS_PORT = 52810;
 export const EXTENSION_CLIENT_ID = "browser-control-extension";
 export const DAEMON_SERVER_ID = "bctl-daemon";
@@ -111,7 +112,15 @@ export const DAEMON_METHODS = [
   "session.stop",
   "session.stop_all",
   "session.list",
+  "session.resume",
   "tool.wait_ms",
+  "record.start",
+  "record.stop",
+  "download.fetch",
+  "artifact.read",
+  "artifact.list",
+  "remote.status",
+  "remote.reload",
 ] as const;
 
 /** Methods the daemon forwards to the owning extension (CLI → daemon → extension). */
@@ -152,6 +161,12 @@ export const TOOL_METHODS = [
   "tool.dialog_handle",
   "tool.cookies",
   "tool.pdf",
+  "tool.upload",
+  "tool.tables",
+  "tool.record_start",
+  "tool.record_stop",
+  "tool.download",
+  "tool.downloads",
 ] as const;
 
 export type DaemonMethod = (typeof DAEMON_METHODS)[number];
@@ -179,6 +194,10 @@ const READ_METHODS: ReadonlySet<string> = new Set([
   "tool.dialog_status",
   "tool.cookies",
   "tool.pdf",
+  "tool.tables",
+  "tool.downloads",
+  "tool.record_start",
+  "tool.record_stop",
 ]);
 
 export function methodEffect(method: string): MethodEffect {
@@ -198,7 +217,9 @@ export type EventKind =
   | "session.window_closed"
   | "session.user_interrupt"
   | "session.activity"
-  | "dialog.changed";
+  | "dialog.changed"
+  | "record.frame"
+  | "record.ended";
 
 // ---------------------------------------------------------------------------
 // Handshake (extension → daemon, first frame on the WebSocket)
@@ -656,6 +677,185 @@ export interface PdfParams extends TabScoped {
 export interface PdfResult {
   tab_id: number;
   data: string;
+}
+
+// ---------------------------------------------------------------------------
+// Files: upload, downloads, artifacts
+// ---------------------------------------------------------------------------
+
+/** A file carried over the wire (the CLI reads it on its own machine). */
+export interface WireFile {
+  name: string;
+  mime?: string;
+  /** Base64 bytes. */
+  data: string;
+}
+export interface UploadParams extends TargetParams {
+  files: WireFile[];
+}
+export interface UploadResult {
+  tab_id: number;
+  target: string;
+  /** `input`: set on the resolved <input type=file>; `chooser`: the click opened a file chooser that was answered. */
+  via: "input" | "chooser";
+  files: string[];
+  multiple: boolean;
+}
+
+export interface DownloadParams extends TabScoped {
+  /** Absolute or page-relative URL. Either `url` or `target` (a link ref/selector). */
+  url?: string;
+  target?: string;
+  /** File name to save as (inside the browser's download directory). */
+  filename?: string;
+}
+export interface DownloadInfo {
+  download_id: number;
+  url: string;
+  /** Absolute path on the browser's machine once known. */
+  filename: string;
+  basename: string;
+  mime?: string;
+  state: "in_progress" | "complete" | "interrupted";
+  error?: string;
+  bytes_received: number;
+  total_bytes: number;
+  started_at: string;
+  ended_at?: string;
+}
+export interface DownloadResult {
+  tab_id: number;
+  download: DownloadInfo;
+}
+export interface DownloadsParams extends SessionScoped {
+  download_id?: number;
+  /** Wait until the download (or the newest/next session download) is no longer in progress. */
+  wait?: boolean;
+  /** With `wait` and no id: only consider downloads started at/after this epoch ms. */
+  since_ms?: number;
+  timeout_ms?: number;
+}
+export interface DownloadsResult {
+  downloads: DownloadInfo[];
+  /** Set when `wait` was requested: the download that was waited for. */
+  waited?: DownloadInfo;
+  timed_out?: boolean;
+}
+export interface DownloadFetchParams extends SessionScoped {
+  download_id: number;
+}
+
+export interface ArtifactInfo {
+  artifact_id: string;
+  kind: "recording" | "download";
+  name: string;
+  size: number;
+  mime: string;
+  /** Path on the daemon's machine. */
+  path: string;
+  session_id: string;
+  created_at: string;
+}
+export interface ArtifactReadParams {
+  artifact_id: string;
+  offset?: number;
+  /** Max bytes to return (capped by the daemon at 4 MiB). */
+  length?: number;
+}
+export interface ArtifactReadResult {
+  artifact_id: string;
+  offset: number;
+  data: string;
+  size: number;
+  eof: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Tables
+// ---------------------------------------------------------------------------
+
+export interface TablesParams extends TabScoped {
+  /** Ref/selector of a table, or of a container whose tables are wanted. */
+  target?: string;
+  max_rows?: number;
+}
+export interface TableData {
+  index: number;
+  ref: string;
+  /** `table` for <table>, otherwise the ARIA role (grid, treegrid, table). */
+  kind: string;
+  caption?: string;
+  headers: string[];
+  rows: string[][];
+  row_count: number;
+  column_count: number;
+  truncated: boolean;
+}
+export interface TablesResult {
+  tab_id: number;
+  url: string;
+  tables: TableData[];
+}
+
+// ---------------------------------------------------------------------------
+// Recording
+// ---------------------------------------------------------------------------
+
+export type RecordingFormat = "mp4" | "webm" | "avi";
+export interface RecordStartParams extends TabScoped {
+  /** JPEG quality of captured frames (1-100). */
+  quality?: number;
+  max_width?: number;
+  max_height?: number;
+  /** Stop automatically after this many seconds (default 300). */
+  max_secs?: number;
+  format?: RecordingFormat;
+}
+export interface ToolRecordStartParams extends TabScoped {
+  recording_id: string;
+  quality?: number;
+  max_width?: number;
+  max_height?: number;
+}
+export interface RecordStartResult {
+  recording_id: string;
+  session_id: string;
+  tab_id: number;
+  max_secs: number;
+}
+export interface RecordStopParams extends SessionScoped {
+  /** Override the output format chosen at start. */
+  format?: RecordingFormat;
+}
+export interface RecordStopResult {
+  recording_id: string;
+  artifact: ArtifactInfo;
+  frames: number;
+  duration_ms: number;
+  format: RecordingFormat;
+  encoder: string;
+  /** Why the recording ended: stopped | max_duration | session_ended | tab_closed */
+  reason: string;
+}
+export interface RecordFrameEvent {
+  session_id: string;
+  recording_id: string;
+  /** Base64 JPEG. */
+  data: string;
+  /** Capture time, epoch ms. */
+  ts: number;
+  width?: number;
+  height?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Remote access (a CLI on another machine talking to this daemon)
+// ---------------------------------------------------------------------------
+
+export interface RemoteStatusResult {
+  enabled: boolean;
+  listening?: string;
+  clients: Array<{ client_id: string; name: string; created_at: string; last_used_at?: string }>;
 }
 
 // ---------------------------------------------------------------------------
