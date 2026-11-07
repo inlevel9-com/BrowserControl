@@ -1,4 +1,4 @@
-# Store listing — BrowserControl 1.1.0
+# Store listing — BrowserControl 1.1.1
 
 ## Chrome Web Store
 
