@@ -232,7 +232,10 @@ async function step(name, fn) {
     console.log(`✔ ${name}`);
   } catch (e) {
     results.failed++;
-    console.log(`✘ ${name}\n   ${e.stack?.split("\n").slice(0, 3).join("\n   ")}`);
+    // Full message (CLI errors carry the JSON error with reason/hint), then the first stack frame.
+    const msg = String(e.message ?? e).split("\n").slice(0, 20).join("\n   ");
+    const at = e.stack?.split("\n").find((l) => l.trim().startsWith("at ")) ?? "";
+    console.log(`✘ ${name}\n   ${msg}\n  ${at}`);
   }
 }
 
@@ -244,7 +247,9 @@ try {
         console.log(`   browser: ${s.browsers[0].process?.browser ?? s.browsers[0].browser.name} (ua=${s.browsers[0].browser.name}, process=${s.browsers[0].process?.name ?? "?"})`);
         // Process identity is how Arc/Dia get named: check the OS lookup (lsof / Get-NetTCPConnection) works here.
         if (process.platform === "darwin" || process.platform === "win32") {
-          assert.equal(s.browsers[0].process?.browser, "chrome", `process identity not resolved: ${JSON.stringify(s.browsers[0].process)}`);
+          const proc = s.browsers[0].process;
+          assert.ok(proc?.pid && proc.browser, `process identity not resolved: ${JSON.stringify(proc)}`);
+          assert.ok(["chrome", "chromium"].includes(proc.browser), `unexpected vendor for a Chromium test build: ${proc.browser}`);
         }
         return;
       }
