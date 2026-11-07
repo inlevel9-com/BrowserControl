@@ -4,3 +4,4 @@ dist/
 .DS_Store
 tests/e2e/.tmp/
 packages/extension/dist.zip
+release/

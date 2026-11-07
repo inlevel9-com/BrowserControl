@@ -30,6 +30,11 @@ let handshake: HandshakeResult | null = null;
 let handshakeError: string | null = null;
 let heartbeat: ReturnType<typeof setInterval> | null = null;
 let browserMeta = { name: "chromium", version: "unknown" };
+/** The browser's real icon as a PNG data URL, sent by the local daemon and cached for the popup. */
+let browserIcon: string | null = null;
+void chrome.storage.local.get("browserIcon").then((g) => {
+  if (typeof g.browserIcon === "string" && g.browserIcon.startsWith("data:image/png;base64,")) browserIcon = g.browserIcon;
+});
 const inflight = new Map<string, AbortController>();
 
 const downloads = new DownloadTracker(sessions, cdp);
@@ -152,6 +157,16 @@ async function onFrame(f: Frame): Promise<void> {
   }
   if (method === "system.ping") {
     reply(id, { pong: true, ts: Date.now() });
+    return;
+  }
+  if (method === "system.browser_icon") {
+    const icon = (params as { icon?: unknown })?.icon;
+    if (typeof icon === "string" && icon.startsWith("data:image/png;base64,") && icon.length < 400_000) {
+      browserIcon = icon;
+      await chrome.storage.local.set({ browserIcon: icon });
+      void broadcastStatus();
+      reply(id, { stored: true });
+    } else replyError(id, rpcError("invalid_params", "icon must be a PNG data URL"));
     return;
   }
   const handler = tools[method];
@@ -287,6 +302,7 @@ async function statusSnapshot() {
     error: handshakeError ?? transport?.error ?? null,
     handshake,
     browser: browserMeta,
+    browserIcon,
     settings,
     version: EXTENSION_VERSION,
     sessions: list,

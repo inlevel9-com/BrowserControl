@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="release/browsercontrol-agent-window.png" alt="An Agent Window controlled by Codex, with the BrowserControl badge and Stop button in the top-right corner" width="720" />
+  <img src="docs/images/agent-window.png" alt="An Agent Window controlled by Codex, with the BrowserControl badge and Stop button in the top-right corner" width="720" />
 </p>
 
 You ask your agent (Claude Code, Codex, Cursor, Gemini CLI, the Claude desktop app, …) to do
@@ -36,7 +36,7 @@ records video if you want, and reports back. Every controlled tab shows a badge 
 ## How it works
 
 ```
- you ──ask──► AI agent ──runs `bctl` (or `bctl mcp`)──► local daemon ──127.0.0.1──► extension ──► your browser
+ you ──ask──► AI agent ──runs `bctl` (or `bctl mcp`)──► helper ─────127.0.0.1──► extension ──► your browser
                                                         (your computer)                         (Agent Window)
 ```
 
@@ -44,12 +44,13 @@ Three pieces, all on your computer:
 
 | Piece | What it is | You install it… |
 | --- | --- | --- |
-| **`bctl`** | Command-line tool the agent runs. Starts a small local daemon on demand. | once |
+| **`bctl`** | Command-line tool the agent runs. | once |
+| **Helper** | A small background program that links the agent and the browser. `bctl` starts it by itself; it runs quietly on your computer. Commands call it the `daemon`. | nothing to install (comes with `bctl`) |
 | **Extension** | Receives `bctl` requests and acts in the Agent Window. | once per browser |
 | **Skill** | Instructions that teach your agent how to use `bctl` safely. | once per agent |
 
 Nothing goes through a server. No account, no analytics. (Optionally, you can let a `bctl` on
-another machine you own reach your daemon: see [Browser on another computer](#browser-on-another-computer).)
+another machine you own reach your helper: see [Browser on another computer](#browser-on-another-computer).)
 
 ## Which AI tools can use it?
 
@@ -95,7 +96,7 @@ bctl --version
    `brave://extensions`; in Arc/Dia type `chrome://extensions` in the address bar).
 2. Turn on **Developer mode** → **Load unpacked** → choose `packages/extension/dist`.
 3. Click the BrowserControl icon. Optionally give it a label like `work-chrome`.
-   It shows **Connected** once the daemon is running (step 5 starts it).
+   It shows **Connected** once the helper is running (step 5 starts it).
 
 > The extension is under Chrome Web Store review. Until it is listed, use **Load unpacked**.
 > Version 1.1 adds the `downloads` permission; when you update an unpacked copy, click the
@@ -117,7 +118,7 @@ Restart the agent afterwards so it picks the skill up.
 bctl doctor
 ```
 
-You want to see the daemon running, at least one **connected browser**, and the skill installed.
+You want to see the helper running (`daemon`), at least one **connected browser**, and the skill installed.
 
 ## Use it with Claude Code
 
@@ -149,14 +150,14 @@ Applies to the Codex CLI, the Codex IDE extension and the Codex app.
 
 1. Install the skill: `bctl install-skill --harness codex` (writes to `~/.codex/skills`), then
    restart Codex.
-2. **Start the daemon yourself first**, in a normal terminal:
+2. **Start the helper yourself first**, in a normal terminal:
 
    ```sh
    bctl daemon start
    ```
 
    Codex runs commands in a sandbox by default. The sandbox can block `bctl` from starting the
-   daemon or writing to `~/.bctl`, so having the daemon already running avoids most problems.
+   helper or writing to `~/.bctl`, so having it already running avoids most problems.
 3. Ask Codex, mentioning the browser:
 
    ```text
@@ -238,7 +239,7 @@ and `--out` for downloads and recordings saves on the agent's machine.
 
 The connection is encrypted and authenticated with the pairing secret (AES-256-GCM, fresh keys
 per connection). A paired machine can control your browser like a local agent, but cannot stop
-your daemon or change remote settings. Manage it with `bctl remote status`, `bctl remote revoke
+your helper or change remote settings. Manage it with `bctl remote status`, `bctl remote revoke
 devbox`, and `bctl remote disable`; on the other machine, `bctl remote forget` goes back to local.
 
 ## What to ask for
@@ -335,7 +336,7 @@ Every command accepts `--session <id>` (or `BCTL_SESSION`), `--tab <id>`, and `-
   private.
 - Remote access is off until you pair a machine, listens on loopback by default, and every
   connection must prove it holds that machine's pairing secret. Revoke it any time.
-- The daemon listens only on `127.0.0.1` and only accepts connections from Chromium extensions.
+- The helper listens only on `127.0.0.1` (inside your computer) and only accepts connections from Chromium extensions.
   `BCTL_EXTENSION_IDS` can pin specific extension ids.
 - The skill tells the agent that page content is data, never instructions.
 
@@ -349,7 +350,7 @@ Details: [PRIVACY.md](PRIVACY.md).
 | Extension popup isn't **Connected** | Run any `bctl` command (e.g. `bctl doctor`) or `bctl daemon start`. Check the port in the popup matches `BCTL_PORT` (default 52810). |
 | `bctl doctor` shows no browser | Load the extension in that browser (step 3) and open its popup once. |
 | Agent doesn't know about BrowserControl | Run `bctl install-skill --harness <your agent>` and restart the agent. |
-| Daemon won't start | `bctl daemon start --foreground` shows the error. `bctl logs -n 100` shows recent logs. |
+| Helper won't start | `bctl daemon start --foreground` shows the error. `bctl logs -n 100` shows recent logs. |
 | Actions fail with `user_aborted` | Someone pressed **Stop**. Tell the agent to continue; it runs `bctl session resume <id>`. |
 | "started debugging this browser" bar | Normal while the agent controls a tab. It disappears when the session stops. |
 | Recording saved as `.avi` instead of `.mp4` | ffmpeg isn't on PATH. Install it, or point `BCTL_FFMPEG` at it. |
@@ -365,7 +366,7 @@ Per-browser notes: [docs/browsers.md](docs/browsers.md).
 
 ```sh
 pnpm typecheck && pnpm test     # unit tests (node:test)
-pnpm e2e                        # real Chromium + unpacked extension + daemon + CLI
+pnpm e2e                        # real Chromium + unpacked extension + helper + CLI
 pnpm e2e -- --headful           # watch it
 pnpm e2e -- --browser "/Applications/Whale.app/Contents/MacOS/Whale"
 ```

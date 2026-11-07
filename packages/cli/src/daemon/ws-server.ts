@@ -17,6 +17,7 @@ import {
 } from "@browser-control/protocol";
 import { WebSocket, WebSocketServer } from "ws";
 import { VERSION } from "../version";
+import { browserIcon } from "./browser-icon";
 import { identifyPeer } from "./process-identity";
 import type { BrowserClient, DaemonState } from "./state";
 
@@ -189,6 +190,10 @@ export class ExtensionServer extends EventEmitter {
     ws.send(JSON.stringify({ id, result }));
     this.log(`browser connected: ${client.instanceId} ${client.browser.name}/${client.browser.version} process=${processId?.name ?? "?"} origin=${origin}`);
     this.emit("browser.connected", client);
+    // Hand the popup the browser's real icon from its local install (best effort, after the handshake).
+    void browserIcon(processId).then((icon) => {
+      if (icon && client.ws.readyState === WebSocket.OPEN) void this.call(client, "system.browser_icon", { icon, name: processId?.name }, 5_000).catch(() => undefined);
+    });
     return client;
   }
 

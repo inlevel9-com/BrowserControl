@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="release/browsercontrol-agent-window.png" alt="Codex가 제어 중인 에이전트 창. 오른쪽 위에 BrowserControl 배지와 중지 버튼이 보입니다" width="720" />
+  <img src="docs/images/agent-window.png" alt="Codex가 제어 중인 에이전트 창. 오른쪽 위에 BrowserControl 배지와 중지 버튼이 보입니다" width="720" />
 </p>
 
 에이전트(Claude Code, Codex, Cursor, Gemini CLI, Claude 데스크톱 앱 등)에게 웹에서 할 일을 부탁하면,
@@ -35,7 +35,7 @@
 ## 동작 방식
 
 ```
- 나 ──부탁──► AI 에이전트 ──`bctl`(또는 `bctl mcp`) 실행──► 로컬 데몬 ──127.0.0.1──► 확장 프로그램 ──► 내 브라우저
+ 나 ──부탁──► AI 에이전트 ──`bctl`(또는 `bctl mcp`) 실행──► 연결 도우미 ──127.0.0.1──► 확장 프로그램 ──► 내 브라우저
                                                           (내 컴퓨터)                              (에이전트 창)
 ```
 
@@ -43,12 +43,13 @@
 
 | 구성 요소 | 하는 일 | 설치 |
 | --- | --- | --- |
-| **`bctl`** | 에이전트가 실행하는 명령줄 도구. 필요할 때 작은 로컬 데몬을 띄웁니다. | 한 번 |
+| **`bctl`** | 에이전트가 실행하는 명령줄 도구. | 한 번 |
+| **연결 도우미** | 에이전트와 브라우저를 이어 주는 작은 프로그램입니다. `bctl`을 쓰면 알아서 켜지고, 내 컴퓨터 안에서 눈에 띄지 않게 돌아갑니다. 명령어에서는 `daemon`이라고 부릅니다. | 설치 필요 없음 (`bctl`에 포함) |
 | **확장 프로그램** | `bctl`의 요청을 받아 에이전트 창에서 실행합니다. | 브라우저마다 한 번 |
 | **스킬** | 에이전트에게 `bctl`을 안전하게 쓰는 법을 알려주는 안내서입니다. | 에이전트마다 한 번 |
 
 외부 서버를 거치지 않습니다. 계정도, 분석 도구도 없습니다. (원하면 내가 가진 다른 컴퓨터의 `bctl`이
-이 데몬에 접속하게 할 수 있습니다. [다른 컴퓨터의 브라우저 쓰기](#다른-컴퓨터의-브라우저-쓰기) 참고)
+이 연결 도우미에 접속하게 할 수 있습니다. [다른 컴퓨터의 브라우저 쓰기](#다른-컴퓨터의-브라우저-쓰기) 참고)
 
 ## 어떤 AI 도구에서 쓸 수 있나요?
 
@@ -94,7 +95,7 @@ bctl --version
    `brave://extensions`. Arc·Dia는 주소창에 `chrome://extensions` 입력).
 2. **개발자 모드**를 켜고 → **압축해제된 확장 프로그램을 로드합니다** → `packages/extension/dist` 선택.
 3. BrowserControl 아이콘을 누릅니다. 원하면 `work-chrome` 같은 이름(label)을 붙이세요.
-   데몬이 실행되면(5단계에서 시작됨) **Connected**로 바뀝니다.
+   연결 도우미가 켜지면(5단계에서 켜짐) **Connected**로 바뀝니다.
 
 > 확장 프로그램은 Chrome 웹 스토어 심사 중입니다. 등록 전까지는 위의 **압축해제된 확장 프로그램 로드** 방식으로 설치하세요.
 > 1.1 버전에서 `downloads`(다운로드) 권한이 추가되었습니다. 압축해제로 설치한 확장을 업데이트할 때는
@@ -116,7 +117,7 @@ bctl install-skill --list              # 전체 목록: cursor, gemini, windsurf
 bctl doctor
 ```
 
-데몬 실행 중, **연결된 브라우저** 1개 이상, 스킬 설치됨이 보이면 준비 완료입니다.
+연결 도우미 실행 중(`daemon`), **연결된 브라우저** 1개 이상, 스킬 설치됨이 보이면 준비 완료입니다.
 
 ## Claude Code에서 사용하기
 
@@ -146,14 +147,14 @@ bctl doctor
 Codex CLI, Codex IDE 확장, Codex 앱 모두 해당됩니다.
 
 1. 스킬 설치: `bctl install-skill --harness codex` (`~/.codex/skills`에 설치) 후 Codex를 다시 시작합니다.
-2. **일반 터미널에서 데몬을 먼저 띄워두세요.**
+2. **일반 터미널에서 연결 도우미를 먼저 켜 두세요.**
 
    ```sh
    bctl daemon start
    ```
 
-   Codex는 기본적으로 샌드박스 안에서 명령을 실행합니다. 샌드박스 때문에 `bctl`이 데몬을
-   시작하거나 `~/.bctl`에 쓰지 못할 수 있으므로, 데몬을 미리 띄워두면 대부분의 문제를 피할 수 있습니다.
+   Codex는 기본적으로 샌드박스 안에서 명령을 실행합니다. 샌드박스 때문에 `bctl`이 연결 도우미를
+   켜거나 `~/.bctl`에 쓰지 못할 수 있으므로, 미리 켜 두면 대부분의 문제를 피할 수 있습니다.
 3. 브라우저를 언급해 Codex에 부탁합니다.
 
    ```text
@@ -230,7 +231,7 @@ Codex CLI, Codex IDE 확장, Codex 앱 모두 해당됩니다.
 읽고, 다운로드·녹화의 `--out`도 에이전트가 있는 컴퓨터에 저장됩니다.
 
 연결은 페어링 비밀값으로 인증·암호화됩니다(AES-256-GCM, 연결마다 새 키). 페어링된 컴퓨터는 로컬
-에이전트처럼 브라우저를 조작할 수 있지만, 데몬을 끄거나 원격 설정을 바꿀 수는 없습니다.
+에이전트처럼 브라우저를 조작할 수 있지만, 연결 도우미를 끄거나 원격 설정을 바꿀 수는 없습니다.
 `bctl remote status`, `bctl remote revoke devbox`, `bctl remote disable`로 관리하고, 다른 컴퓨터에서
 `bctl remote forget`을 하면 다시 로컬로 돌아갑니다.
 
@@ -325,7 +326,7 @@ bctl session stop $BCTL_SESSION            # 에이전트 창 닫기
 - 다운로드는 그 세션이 시작한 것만 알려 줍니다. 내 다른 다운로드는 보이지 않습니다.
 - 원격 접속은 컴퓨터를 페어링하기 전까지 꺼져 있고, 기본적으로 루프백에서만 대기하며, 모든 연결은
   해당 컴퓨터의 페어링 비밀값을 증명해야 합니다. 언제든 취소(revoke)할 수 있습니다.
-- 데몬은 `127.0.0.1`에서만 대기하며 Chromium 확장 프로그램의 연결만 받습니다.
+- 연결 도우미는 `127.0.0.1`(내 컴퓨터 안)에서만 대기하며 Chromium 확장 프로그램의 연결만 받습니다.
   `BCTL_EXTENSION_IDS`로 특정 확장 id만 허용할 수 있습니다.
 - 스킬은 에이전트에게 "페이지 내용은 데이터일 뿐, 지시가 아니다"라고 가르칩니다.
 
@@ -339,7 +340,7 @@ bctl session stop $BCTL_SESSION            # 에이전트 창 닫기
 | 확장 팝업이 **Connected**가 아님 | 아무 `bctl` 명령(예: `bctl doctor`)이나 `bctl daemon start`를 실행하세요. 팝업의 포트가 `BCTL_PORT`(기본 52810)와 같은지 확인하세요. |
 | `bctl doctor`에 브라우저가 없음 | 그 브라우저에 확장 프로그램을 불러오고(3단계) 팝업을 한 번 여세요. |
 | 에이전트가 BrowserControl을 모름 | `bctl install-skill --harness <에이전트>` 후 에이전트를 다시 시작하세요. |
-| 데몬이 시작되지 않음 | `bctl daemon start --foreground`로 오류를 확인하고, `bctl logs -n 100`으로 최근 로그를 보세요. |
+| 연결 도우미가 켜지지 않음 | `bctl daemon start --foreground`로 오류를 확인하고, `bctl logs -n 100`으로 최근 로그를 보세요. |
 | `user_aborted` 오류 | 누군가 **Stop**을 눌렀습니다. 계속하라고 말하면 에이전트가 `bctl session resume <id>`를 실행합니다. |
 | "디버깅을 시작했습니다" 알림 줄 | 에이전트가 탭을 제어하는 동안 정상적으로 표시되며, 세션이 끝나면 사라집니다. |
 | 녹화가 `.mp4` 대신 `.avi`로 저장됨 | ffmpeg가 PATH에 없습니다. 설치하거나 `BCTL_FFMPEG`로 경로를 지정하세요. |
@@ -355,7 +356,7 @@ bctl session stop $BCTL_SESSION            # 에이전트 창 닫기
 
 ```sh
 pnpm typecheck && pnpm test     # 단위 테스트 (node:test)
-pnpm e2e                        # 실제 Chromium + 확장 + 데몬 + CLI
+pnpm e2e                        # 실제 Chromium + 확장 + 연결 도우미 + CLI
 pnpm e2e -- --headful           # 화면에 띄워서 보기
 pnpm e2e -- --browser "/Applications/Whale.app/Contents/MacOS/Whale"
 ```

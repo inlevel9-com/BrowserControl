@@ -1,38 +1,278 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8" />
 <title>BrowserControl</title>
 <style>
-  :root { color-scheme: light dark; font: 13px/1.4 -apple-system, "Segoe UI", system-ui, sans-serif; }
-  body { margin: 0; width: 320px; padding: 14px; }
-  h1 { font-size: 15px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
-  .dot { width: 10px; height: 10px; border-radius: 50%; background: #999; display: inline-block; }
-  .dot.connected { background: #22c55e; } .dot.connecting { background: #f59e0b; } .dot.disconnected { background: #ef4444; }
-  .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 6px 0; }
-  label { opacity: .75; }
-  input[type=text], input[type=number] { width: 150px; padding: 4px 6px; border: 1px solid #8884; border-radius: 6px; background: transparent; color: inherit; }
-  button { padding: 4px 10px; border-radius: 6px; border: 1px solid #8886; background: #8882; color: inherit; cursor: pointer; }
-  button:hover { background: #8884; }
-  code { font-size: 11px; user-select: all; }
-  .muted { opacity: .6; font-size: 11px; }
-  ul { margin: 4px 0 0; padding-left: 16px; }
-  hr { border: 0; border-top: 1px solid #8883; margin: 10px 0; }
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f6fb;
+    --card: #ffffff;
+    --line: #e6e6f0;
+    --text: #17172b;
+    --muted: #6b6b85;
+    --accent: #5b5bd6;
+    --accent-2: #8b5cf6;
+    --accent-soft: #ececfd;
+    --ok: #16a34a;
+    --ok-soft: #dcfce7;
+    --warn: #d97706;
+    --warn-soft: #fef3c7;
+    --bad: #dc2626;
+    --bad-soft: #fee2e2;
+    --off: #71717a;
+    --off-soft: #f1f1f4;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #13131c;
+      --card: #1c1c28;
+      --line: #2c2c3d;
+      --text: #ececf4;
+      --muted: #9a9ab3;
+      --accent: #8b8bf5;
+      --accent-2: #a78bfa;
+      --accent-soft: #26264a;
+      --ok: #4ade80;
+      --ok-soft: #12301f;
+      --warn: #fbbf24;
+      --warn-soft: #33270d;
+      --bad: #f87171;
+      --bad-soft: #3a1717;
+      --off: #a1a1aa;
+      --off-soft: #24242f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; width: 340px; background: var(--bg); color: var(--text); }
+  button, input { font: inherit; color: inherit; }
+  .hidden { display: none !important; }
+
+  /* Header */
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 12px 14px 11px;
+    background: linear-gradient(135deg, var(--accent-soft), transparent 70%);
+    border-bottom: 1px solid var(--line);
+  }
+  header img { width: 38px; height: 38px; border-radius: 10px; flex: none; box-shadow: 0 2px 8px #5b5bd633; }
+  .title { flex: 1; min-width: 0; }
+  .title h1 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
+  .title .sub { color: var(--muted); font-size: 11.5px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px 3px 8px; border-radius: 999px;
+    font-size: 11.5px; font-weight: 600; white-space: nowrap;
+  }
+  .pill i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .pill.ok { color: var(--ok); background: var(--ok-soft); }
+  .pill.warn { color: var(--warn); background: var(--warn-soft); }
+  .pill.warn i { animation: pulse 1.2s ease-in-out infinite; }
+  .pill.bad { color: var(--bad); background: var(--bad-soft); }
+  .pill.off { color: var(--off); background: var(--off-soft); }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+
+  main { padding: 10px 12px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; min-width: 0; }
+  .card h2 {
+    margin: 0 0 8px; font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+
+  /* Callout */
+  .callout { border-radius: 12px; padding: 10px 12px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; }
+  .callout.bad { background: var(--bad-soft); }
+  .callout.off { background: var(--off-soft); }
+  .callout.ok { background: var(--ok-soft); }
+  .callout .head { display: flex; gap: 8px; align-items: flex-start; font-weight: 600; }
+  .callout .head svg { flex: none; margin-top: 1px; }
+  .callout.bad .head { color: var(--bad); }
+  .callout.ok .head { color: var(--ok); }
+  .callout p { margin: 0; color: var(--muted); font-size: 12px; }
+  .callout .detail { font-family: var(--mono); font-size: 11px; color: var(--muted); word-break: break-all; }
+
+  /* Rows */
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 32px; }
+  .row + .row { border-top: 1px solid var(--line); }
+  .row .k { color: var(--muted); }
+  .row .v { font-weight: 550; text-align: right; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .browser { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .browser .glyph {
+    width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; flex: none;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; font-weight: 700; font-size: 13px;
+  }
+  .browser .glyph.has-icon { background: none; }
+  .browser .glyph img { width: 32px; height: 32px; display: block; }
+  .browser .name { font-weight: 650; }
+  .browser .ver { color: var(--muted); font-size: 11.5px; }
+
+  /* Inputs */
+  .field { display: flex; gap: 6px; align-items: center; }
+  .field input {
+    width: 140px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); outline: none;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .field input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .field input.num { width: 90px; }
+  .saved { color: var(--ok); font-size: 11.5px; font-weight: 600; opacity: 0; transition: opacity .2s; }
+  .saved.show { opacity: 1; }
+
+  /* Code chip with copy */
+  .code {
+    display: flex; align-items: center; gap: 6px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 4px 4px 4px 9px; font-family: var(--mono); font-size: 11.5px;
+  }
+  .code span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: all; }
+  .icon-btn {
+    border: 0; background: transparent; padding: 4px; border-radius: 6px; cursor: pointer; color: var(--muted);
+    display: grid; place-items: center; flex: none;
+  }
+  .icon-btn:hover { background: var(--accent-soft); color: var(--accent); }
+  .icon-btn.done { color: var(--ok); }
+
+  /* Toggle */
+  .switch { position: relative; width: 34px; height: 20px; flex: none; }
+  .switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+  .switch span {
+    position: absolute; inset: 0; border-radius: 999px; background: var(--line); cursor: pointer; transition: background .2s;
+  }
+  .no-anim .switch span, .no-anim .switch span::after { transition: none; }
+  .switch span::after {
+    content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff;
+    box-shadow: 0 1px 3px #0003; transition: transform .2s;
+  }
+  .switch input:checked + span { background: var(--accent); }
+  .switch input:checked + span::after { transform: translateX(14px); }
+  .switch input:focus-visible + span { box-shadow: 0 0 0 3px var(--accent-soft); }
+
+  /* Sessions */
+  .count { background: var(--accent-soft); color: var(--accent); border-radius: 999px; padding: 1px 7px; font-size: 11px; letter-spacing: 0; }
+  .sessions { display: grid; gap: 6px; }
+  .session { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 10px; background: var(--bg); }
+  .session .sid {
+    font-family: var(--mono); font-weight: 650; font-size: 12px; color: var(--accent); background: var(--accent-soft);
+    padding: 2px 7px; border-radius: 6px;
+  }
+  .session .who { flex: 1; min-width: 0; }
+  .session .who b { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .session .who small { color: var(--muted); }
+  .empty { color: var(--muted); font-size: 12px; text-align: center; padding: 2px 0; }
+  .agent-cmd { margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--line); display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; }
+  .agent-cmd small { color: var(--muted); font-size: 11.5px; }
+
+  details summary {
+    cursor: pointer; color: var(--muted); font-size: 12px; list-style: none; display: flex; align-items: center; gap: 6px; padding: 2px 2px;
+  }
+  details summary::-webkit-details-marker { display: none; }
+  details summary svg { transition: transform .15s; }
+  details[open] summary svg { transform: rotate(90deg); }
+  details .card { margin-top: 8px; }
+
+  footer {
+    display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 2px 14px 11px; color: var(--muted); font-size: 11.5px;
+  }
+  footer a { color: var(--accent); text-decoration: none; font-weight: 600; }
+  footer a:hover { text-decoration: underline; }
 </style>
 </head>
-<body>
-  <h1><span id="dot" class="dot"></span> BrowserControl <span id="state" class="muted"></span></h1>
-  <div class="row"><label>Enabled</label><input type="checkbox" id="enabled" /></div>
-  <div class="row"><label>Daemon port</label><span><input type="number" id="port" min="1" max="65535" /> <button id="savePort">Save</button></span></div>
-  <div class="row"><label>Label</label><span><input type="text" id="label" placeholder="e.g. work-chrome" /> <button id="saveLabel">Save</button></span></div>
-  <div class="row"><label>Browser</label><span id="browser" class="muted"></span></div>
-  <div class="row"><label>Instance id</label><code id="instance"></code></div>
-  <div class="row"><label>Daemon</label><span id="daemon" class="muted">–</span></div>
-  <hr />
-  <div><label>Active sessions</label><ul id="sessions"><li class="muted">none</li></ul></div>
-  <hr />
-  <div class="muted">Agent command: <code>bctl session start --browser &lt;label-or-instance-id&gt;</code></div>
-  <div class="muted" id="hint"></div>
+<body class="no-anim">
+  <header>
+    <img src="icons/icon128.png" alt="" />
+    <div class="title">
+      <h1>BrowserControl</h1>
+      <div class="sub" id="sub">AI agents in your browser</div>
+    </div>
+    <span class="pill off" id="pill"><i></i><span id="pillText">…</span></span>
+  </header>
+
+  <main>
+    <!-- Connection state -->
+    <section class="callout bad hidden" id="offline">
+      <div class="head">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+        <span>The BrowserControl helper isn't running</span>
+      </div>
+      <p>It links agents to this browser. Start it in a terminal (any bctl command starts it too):</p>
+      <div class="code"><span>bctl daemon start</span><button class="icon-btn copy" data-copy="bctl daemon start" title="Copy"></button></div>
+      <div class="detail" id="offlineDetail"></div>
+    </section>
+    <section class="callout off hidden" id="disabled">
+      <div class="head"><span>Paused — agents can't reach this browser</span></div>
+      <p>Turn the switch back on to reconnect.</p>
+    </section>
+
+    <!-- Browser -->
+    <section class="card">
+      <h2>
+        <span>This browser</span>
+        <label class="switch" title="Allow agents to connect">
+          <input type="checkbox" id="enabled" />
+          <span></span>
+        </label>
+      </h2>
+      <div class="browser">
+        <div class="glyph" id="glyph">C</div>
+        <div>
+          <div class="name" id="browserName">Chrome</div>
+          <div class="ver" id="browserVer">Chromium</div>
+        </div>
+      </div>
+      <div class="row">
+        <span class="k">Label</span>
+        <span class="field">
+          <span class="saved" id="labelSaved">Saved</span>
+          <input type="text" id="label" placeholder="e.g. work-chrome" maxlength="64" spellcheck="false" />
+        </span>
+      </div>
+      <div class="row">
+        <span class="k">Instance id</span>
+        <span class="field">
+          <span class="v" id="instance" style="font-family: var(--mono); font-size: 12px">–</span>
+          <button class="icon-btn copy" id="copyInstance" title="Copy instance id"></button>
+        </span>
+      </div>
+      <div class="row">
+        <span class="k">Helper</span>
+        <span class="v" id="daemon">–</span>
+      </div>
+      <div class="agent-cmd">
+        <small>Agents pick this browser with</small>
+        <div class="code"><span id="cmd">bctl session start --browser …</span><button class="icon-btn copy" id="copyCmd" title="Copy"></button></div>
+      </div>
+    </section>
+
+    <!-- Sessions -->
+    <section class="card" id="sessionsCard">
+      <h2><span>Agent sessions</span><span class="count" id="count">0</span></h2>
+      <div class="sessions" id="sessions"></div>
+    </section>
+
+    <details>
+      <summary>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+        Advanced
+      </summary>
+      <div class="card">
+        <div class="row">
+          <span class="k">Helper port</span>
+          <span class="field">
+            <span class="saved" id="portSaved">Saved</span>
+            <input type="number" class="num" id="port" min="1" max="65535" />
+          </span>
+        </div>
+        <div class="row">
+          <span class="k">Extension</span>
+          <span class="v" id="extVersion">–</span>
+        </div>
+      </div>
+    </details>
+  </main>
+
+  <footer>
+    <span>Press <b>Stop</b> on any controlled tab to halt an agent.</span>
+    <a href="https://github.com/inlevel9-com/BrowserControl#readme" target="_blank" rel="noreferrer">Help</a>
+  </footer>
+
   <script type="module" src="popup.js"></script>
 </body>
 </html>
